@@ -63,6 +63,9 @@ export interface WebhookConfig {
 }
 
 export interface UserProfile {
+  uid?: string;
+  email?: string;
+  photoURL?: string;
   name: string;
   document: string; // CPF or CNPJ
   accountNumber: string;

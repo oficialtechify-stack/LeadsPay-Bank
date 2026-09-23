@@ -1,27 +1,56 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ShieldCheck, X, CheckCircle2, User, Mail, Phone, ArrowRight } from 'lucide-react';
+import { ShieldCheck, X, CheckCircle2, User, Mail, Phone, ArrowRight, Loader2 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { soundEffects } from '../utils/audio';
 
 interface OpenAccountModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAccountCreated: (name: string, email: string) => void;
+  onAccountCreated: (name: string, email: string, cpf?: string, phone?: string) => void;
+  onGoogleSignIn: () => Promise<void>;
 }
 
 export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
   isOpen,
   onClose,
-  onAccountCreated
+  onAccountCreated,
+  onGoogleSignIn
 }) => {
   const [name, setName] = useState('');
   const [cpf, setCpf] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [isSuccess, setIsSuccess] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
+
+  const handleGoogleClick = async () => {
+    try {
+      setErrorMessage(null);
+      setIsGoogleLoading(true);
+      await onGoogleSignIn();
+      setIsSuccess(true);
+      soundEffects.playPixSuccess();
+      confetti({
+        particleCount: 70,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ['#a3e635', '#00e676', '#ffffff']
+      });
+      setTimeout(() => {
+        setIsSuccess(false);
+        setIsGoogleLoading(false);
+        onClose();
+      }, 900);
+    } catch (err: unknown) {
+      console.error(err);
+      setIsGoogleLoading(false);
+      setErrorMessage(err instanceof Error ? err.message : 'Falha ao autenticar com o Google. Tente novamente.');
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,10 +66,15 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
     });
 
     setTimeout(() => {
-      onAccountCreated(name.trim(), email.trim() || 'cliente@leadspay.com.br');
+      onAccountCreated(
+        name.trim(), 
+        email.trim() || 'cliente@leadspay.com.br',
+        cpf.trim() || '000.***.***-00',
+        phone.trim() || '+55 11 98842-7719'
+      );
       setIsSuccess(false);
       onClose();
-    }, 1200);
+    }, 1100);
   };
 
   return (
@@ -61,8 +95,8 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
 
           {!isSuccess ? (
             <div>
-              <div className="flex items-center gap-2.5 mb-5">
-                <div className="w-10 h-10 rounded-2xl bg-[#a3e635]/20 border border-[#a3e635]/40 flex items-center justify-center text-[#a3e635]">
+              <div className="flex items-center gap-2.5 mb-4">
+                <div className="w-10 h-10 rounded-2xl bg-[#a3e635]/20 border border-[#a3e635]/40 flex items-center justify-center text-[#a3e635] shrink-0">
                   <ShieldCheck className="w-5 h-5" />
                 </div>
                 <div>
@@ -75,7 +109,53 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
                 </div>
               </div>
 
-              <form onSubmit={handleSubmit} className="space-y-3.5">
+              {errorMessage && (
+                <div className="mb-3.5 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs">
+                  {errorMessage}
+                </div>
+              )}
+
+              {/* GOOGLE SIGN IN BUTTON */}
+              <button
+                type="button"
+                onClick={handleGoogleClick}
+                disabled={isGoogleLoading}
+                className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all shadow-md active:scale-[0.98] cursor-pointer"
+              >
+                {isGoogleLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-slate-700" />
+                ) : (
+                  <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                    <path
+                      fill="#4285F4"
+                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                    />
+                  </svg>
+                )}
+                <span>{isGoogleLoading ? 'Conectando ao Google...' : 'Continuar com o Google'}</span>
+              </button>
+
+              {/* DIVIDER */}
+              <div className="flex items-center gap-3 my-3 text-[10px] text-slate-500 uppercase tracking-widest font-mono">
+                <div className="flex-1 h-px bg-white/10" />
+                <span>ou preencha os dados</span>
+                <div className="flex-1 h-px bg-white/10" />
+              </div>
+
+              {/* MANUAL FORM */}
+              <form onSubmit={handleSubmit} className="space-y-3">
                 <div>
                   <label className="text-[11px] font-medium text-slate-300 block mb-1">
                     Nome Completo
@@ -88,7 +168,7 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
                       placeholder="Ex: Henrique Silveira"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2.5 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none"
+                      className="w-full pl-9 pr-3 py-2 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none"
                     />
                   </div>
                 </div>
@@ -103,7 +183,7 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
                     placeholder="000.000.000-00"
                     value={cpf}
                     onChange={(e) => setCpf(e.target.value)}
-                    className="w-full px-3 py-2.5 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none font-mono"
+                    className="w-full px-3 py-2 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none font-mono"
                   />
                 </div>
 
@@ -119,7 +199,7 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
                       placeholder="seuemail@leadspay.com.br"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2.5 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none"
+                      className="w-full pl-9 pr-3 py-2 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none"
                     />
                   </div>
                 </div>
@@ -135,15 +215,15 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
                       placeholder="(11) 99999-9999"
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2.5 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none font-mono"
+                      className="w-full pl-9 pr-3 py-2 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none font-mono"
                     />
                   </div>
                 </div>
 
-                <div className="pt-2">
+                <div className="pt-1.5">
                   <button
                     type="submit"
-                    className="w-full py-3 rounded-xl bg-[#a3e635] hover:bg-[#92d628] text-black font-bold text-xs flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(163,230,53,0.3)] transition-all"
+                    className="w-full py-2.5 rounded-xl bg-[#a3e635] hover:bg-[#92d628] text-black font-bold text-xs flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(163,230,53,0.3)] transition-all cursor-pointer"
                   >
                     <span>Criar Minha Conta Gratuita</span>
                     <ArrowRight className="w-4 h-4" />

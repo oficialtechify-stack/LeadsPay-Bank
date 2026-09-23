@@ -1,0 +1,83 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Individual LeadsPay user account and preferences",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User unique identifier matching auth.uid" },
+        "name": { "type": "string", "description": "Full name of the account holder" },
+        "email": { "type": "string", "description": "Email address" },
+        "photoURL": { "type": "string", "description": "Avatar photo URL" },
+        "document": { "type": "string", "description": "CPF or document number" },
+        "accountNumber": { "type": "string", "description": "Bank account number" },
+        "agency": { "type": "string", "description": "Bank agency" },
+        "bankCode": { "type": "string", "description": "Bank name and code" },
+        "balance": { "type": "number", "description": "Current available balance" },
+        "investedBalance": { "type": "number", "description": "Automated yield balance" },
+        "biometricEnabled": { "type": "boolean", "description": "Biometric protection state" },
+        "streetProtectionMode": { "type": "boolean", "description": "Street mode protection status" },
+        "dailyPixLimit": { "type": "number", "description": "Daily Pix transfer limit" },
+        "nightlyPixLimit": { "type": "number", "description": "Nightly Pix transfer limit" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" }
+      },
+      "required": ["uid", "name", "email", "balance"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Individual banking transaction entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique transaction ID" },
+        "userId": { "type": "string", "description": "Owner user UID" },
+        "title": { "type": "string", "description": "Title or concept" },
+        "description": { "type": "string", "description": "Detailed notes" },
+        "amount": { "type": "number", "description": "Value (positive for credits, negative for debits)" },
+        "type": { "type": "string", "enum": ["pix_received", "pix_sent", "tap_to_pay", "card_spend", "deposit", "investment"] },
+        "status": { "type": "string", "enum": ["completed", "pending", "failed"] },
+        "category": { "type": "string", "description": "Financial category" },
+        "dateFormatted": { "type": "string", "description": "Friendly date string" },
+        "timestamp": { "type": "number", "description": "Epoch timestamp" },
+        "recipientOrSender": { "type": "string", "description": "Other party name" }
+      },
+      "required": ["id", "userId", "title", "amount", "type", "timestamp"]
+    },
+    "VirtualCard": {
+      "title": "VirtualCard",
+      "description": "Virtual or physical debit/credit card for user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Card identifier" },
+        "userId": { "type": "string", "description": "Owner user UID" },
+        "name": { "type": "string", "description": "Card nickname" },
+        "type": { "type": "string", "enum": ["virtual", "physical"] },
+        "cardNumber": { "type": "string", "description": "Masked card number" },
+        "cardHolder": { "type": "string", "description": "Printed name" },
+        "expiry": { "type": "string", "description": "MM/YY expiry" },
+        "cvv": { "type": "string", "description": "Current CVV code" },
+        "cvvExpiresInSeconds": { "type": "number", "description": "CVV TTL in seconds" },
+        "isFrozen": { "type": "boolean", "description": "Card lock status" },
+        "limit": { "type": "number", "description": "Monthly credit limit" },
+        "usedLimit": { "type": "number", "description": "Currently spent limit" },
+        "brand": { "type": "string", "description": "Card brand" },
+        "color": { "type": "string", "description": "Background gradient" },
+        "category": { "type": "string", "description": "Usage label" }
+      },
+      "required": ["id", "userId", "name", "cardNumber", "isFrozen", "limit"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile with personal balance and settings"
+    },
+    "/users/{userId}/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Personal ledger transactions"
+    },
+    "/users/{userId}/cards/{cardId}": {
+      "schema": "VirtualCard",
+      "description": "User's debit and virtual cards"
+    }
+  }
+}

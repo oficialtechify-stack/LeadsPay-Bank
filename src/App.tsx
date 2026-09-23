@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { LoginEntryView } from './components/LoginEntryView';
 import { HeaderBar } from './components/HeaderBar';
@@ -25,8 +25,26 @@ import {
   initialApiKeys, 
   initialWebhooks 
 } from './data/mockData';
-import { Transaction, VirtualCard, DeveloperApiKey, WebhookConfig } from './types';
+import { Transaction, VirtualCard, DeveloperApiKey, WebhookConfig, UserProfile } from './types';
 import { soundEffects } from './utils/audio';
+import {
+  auth,
+  onAuthStateChanged,
+  doc,
+  getDoc,
+  setDoc,
+  db
+} from './firebase/config';
+import {
+  signInWithGoogle,
+  logOut,
+  subscribeToUserAccount,
+  recordTransaction,
+  saveCard,
+  updateUserProfile as updateUserProfileInDb,
+  createInitialUserProfile,
+  createDefaultVirtualCard
+} from './services/firebaseBankService';
 
 export default function App() {
   // Screen and Tab state: starts at the exact entry screen requested
@@ -36,7 +54,7 @@ export default function App() {
   const [showBalance, setShowBalance] = useState(true);
 
   // Core bank data state
-  const [userProfile, setUserProfile] = useState(initialUserProfile);
+  const [userProfile, setUserProfile] = useState<UserProfile>(initialUserProfile);
   const [transactions, setTransactions] = useState<Transaction[]>(initialTransactions);
   const [cards, setCards] = useState<VirtualCard[]>(initialVirtualCards);
   const [categories, setCategories] = useState(initialFinancialCategories);
@@ -64,6 +82,74 @@ export default function App() {
     onVerified: () => {}
   });
 
+  // Real-time Firebase Authentication & per-user individual Firestore synchronization
+  useEffect(() => {
+    let unsubscribeFirestore: (() => void) | null = null;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        try {
+          const userDocRef = doc(db, 'users', currentUser.uid);
+          const docSnap = await getDoc(userDocRef);
+
+          if (!docSnap.exists()) {
+            const newProfile = createInitialUserProfile({
+              uid: currentUser.uid,
+              displayName: currentUser.displayName,
+              email: currentUser.email,
+              photoURL: currentUser.photoURL
+            });
+            await setDoc(userDocRef, newProfile);
+
+            // Create initial virtual card for the user
+            const initialCard = createDefaultVirtualCard(currentUser.uid, newProfile.name);
+            await setDoc(doc(db, 'users', currentUser.uid, 'cards', initialCard.id), initialCard);
+            setUserProfile(newProfile);
+          } else {
+            const data = docSnap.data() as UserProfile;
+            data.uid = currentUser.uid;
+            setUserProfile(data);
+          }
+
+          // Subscribe to individual user Firestore documents and subcollections
+          if (unsubscribeFirestore) unsubscribeFirestore();
+          unsubscribeFirestore = subscribeToUserAccount(currentUser.uid, {
+            onProfile: (updatedProfile) => {
+              setUserProfile(prev => ({
+                ...prev,
+                ...updatedProfile,
+                uid: currentUser.uid
+              }));
+            },
+            onTransactions: (updatedTxs) => {
+              setTransactions(updatedTxs);
+            },
+            onCards: (updatedCards) => {
+              if (updatedCards.length > 0) {
+                setCards(updatedCards);
+              }
+            }
+          });
+
+          setCurrentScreen('bank');
+        } catch (err) {
+          console.error('Error synchronizing individual user data with Firestore:', err);
+        }
+      } else {
+        // Clean up Firestore listener on logout
+        if (unsubscribeFirestore) {
+          unsubscribeFirestore();
+          unsubscribeFirestore = null;
+        }
+      }
+    });
+
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeFirestore) unsubscribeFirestore();
+    };
+  }, []);
+
   // Helper to trigger biometric check
   const requestBiometric = (actionName: string, onVerified: () => void) => {
     if (!userProfile.biometricEnabled) {
@@ -81,15 +167,68 @@ export default function App() {
     });
   };
 
-  // Handle New Transaction (Pix, Tap to Pay, Card)
-  const handleNewTransaction = (newTx: Transaction) => {
-    setTransactions(prev => [newTx, ...prev]);
+  // Google Sign-in Handler
+  const handleGoogleSignIn = async () => {
+    try {
+      const { user, profile } = await signInWithGoogle();
+      setUserProfile(profile);
+      setCurrentScreen('bank');
+      setActiveTab('dashboard');
+      soundEffects.playPixSuccess();
+      setNotification({
+        id: Date.now().toString(),
+        title: 'Conta Conectada!',
+        message: `Bem-vindo, ${user.displayName || user.email}! Seus dados estão seguros no Firebase.`,
+        type: 'pix'
+      });
+    } catch (err: unknown) {
+      const authError = err as { code?: string; message?: string };
+      if (authError?.code !== 'auth/popup-closed-by-user') {
+        console.error('Google Sign-In Error:', err);
+        throw err;
+      }
+    }
+  };
 
-    // Update user balance
-    setUserProfile(prev => ({
-      ...prev,
-      balance: prev.balance + newTx.amount
-    }));
+  // Logout Handler
+  const handleLogout = async () => {
+    try {
+      await logOut();
+    } catch (err) {
+      console.error('Error logging out:', err);
+    }
+    setCurrentScreen('onboarding');
+    setActiveTab('dashboard');
+    setUserProfile(initialUserProfile);
+    setTransactions([]);
+    setNotification({
+      id: Date.now().toString(),
+      title: 'Sessão Encerrada',
+      message: 'Você saiu da sua conta LeadsPay com segurança.',
+      type: 'card'
+    });
+  };
+
+  // Handle New Transaction (Pix, Tap to Pay, Card)
+  const handleNewTransaction = async (newTx: Transaction) => {
+    const currentUid = auth.currentUser?.uid || userProfile.uid;
+
+    if (currentUid) {
+      try {
+        await recordTransaction(currentUid, newTx, userProfile.balance);
+      } catch (err) {
+        console.error('Failed to record transaction to Firestore:', err);
+        // Optimistic fallback
+        setTransactions(prev => [newTx, ...prev]);
+        setUserProfile(prev => ({ ...prev, balance: prev.balance + newTx.amount }));
+      }
+    } else {
+      setTransactions(prev => [newTx, ...prev]);
+      setUserProfile(prev => ({
+        ...prev,
+        balance: prev.balance + newTx.amount
+      }));
+    }
 
     // If it's a Tap to Pay sale, update the Vendas category
     if (newTx.type === 'tap_to_pay') {
@@ -112,25 +251,48 @@ export default function App() {
   };
 
   // Card Freeze Toggle
-  const handleToggleFreeze = (cardId: string) => {
-    setCards(prev => prev.map(c => {
-      if (c.id === cardId) {
-        const nextState = !c.isFrozen;
-        setNotification({
-          id: Date.now().toString(),
-          title: nextState ? 'Cartão Bloqueado' : 'Cartão Desbloqueado',
-          message: `${c.name} foi ${nextState ? 'bloqueado' : 'desbloqueado'} com sucesso.`,
-          type: 'card'
-        });
-        return { ...c, isFrozen: nextState };
+  const handleToggleFreeze = async (cardId: string) => {
+    const currentUid = auth.currentUser?.uid || userProfile.uid;
+    const targetCard = cards.find(c => c.id === cardId);
+    if (!targetCard) return;
+
+    const nextState = !targetCard.isFrozen;
+    const updatedCard: VirtualCard = { ...targetCard, isFrozen: nextState };
+
+    if (currentUid) {
+      try {
+        await saveCard(currentUid, updatedCard);
+      } catch (err) {
+        console.error('Failed to update card freeze in Firestore:', err);
       }
-      return c;
-    }));
+    }
+
+    setCards(prev => prev.map(c => (c.id === cardId ? updatedCard : c)));
+    setNotification({
+      id: Date.now().toString(),
+      title: nextState ? 'Cartão Bloqueado' : 'Cartão Desbloqueado',
+      message: `${targetCard.name} foi ${nextState ? 'bloqueado' : 'desbloqueado'} com sucesso.`,
+      type: 'card'
+    });
   };
 
   // Card Limit Update
-  const handleUpdateLimit = (cardId: string, newLimit: number) => {
-    setCards(prev => prev.map(c => (c.id === cardId ? { ...c, limit: newLimit } : c)));
+  const handleUpdateLimit = async (cardId: string, newLimit: number) => {
+    const currentUid = auth.currentUser?.uid || userProfile.uid;
+    const targetCard = cards.find(c => c.id === cardId);
+    if (!targetCard) return;
+
+    const updatedCard: VirtualCard = { ...targetCard, limit: newLimit };
+
+    if (currentUid) {
+      try {
+        await saveCard(currentUid, updatedCard);
+      } catch (err) {
+        console.error('Failed to update card limit in Firestore:', err);
+      }
+    }
+
+    setCards(prev => prev.map(c => (c.id === cardId ? updatedCard : c)));
     setNotification({
       id: Date.now().toString(),
       title: 'Limite Atualizado',
@@ -140,7 +302,8 @@ export default function App() {
   };
 
   // Create Virtual Card
-  const handleCreateVirtualCard = (name: string, category: VirtualCard['category']) => {
+  const handleCreateVirtualCard = async (name: string, category: VirtualCard['category']) => {
+    const currentUid = auth.currentUser?.uid || userProfile.uid;
     const last4 = Math.floor(1000 + Math.random() * 9000);
     const newCard: VirtualCard = {
       id: 'card-' + Date.now(),
@@ -158,6 +321,15 @@ export default function App() {
       color: 'linear-gradient(135deg, #0f1c13 0%, #172c1e 70%, #00e676 220%)',
       category
     };
+
+    if (currentUid) {
+      try {
+        await saveCard(currentUid, newCard);
+      } catch (err) {
+        console.error('Failed to save virtual card to Firestore:', err);
+      }
+    }
+
     setCards(prev => [newCard, ...prev]);
     soundEffects.playPixSuccess();
     setNotification({
@@ -201,22 +373,57 @@ export default function App() {
 
   // Handle access from login entry screen
   const handleAccessFromOnboarding = () => {
-    requestBiometric('Acessar LeadsPay Bank', () => {
-      setCurrentScreen('bank');
-      setActiveTab('dashboard');
-    });
+    // If not authenticated, prompt Google login or allow direct biometric guest access
+    if (!auth.currentUser) {
+      handleGoogleSignIn().catch(() => {
+        // Fallback to biometric check if user cancels or prefers local access
+        requestBiometric('Acessar LeadsPay Bank', () => {
+          setCurrentScreen('bank');
+          setActiveTab('dashboard');
+        });
+      });
+    } else {
+      requestBiometric('Acessar LeadsPay Bank', () => {
+        setCurrentScreen('bank');
+        setActiveTab('dashboard');
+      });
+    }
   };
 
   // Handle account created from registration modal
-  const handleAccountCreated = (newName: string, newEmail: string) => {
-    setUserProfile(prev => ({
-      ...prev,
+  const handleAccountCreated = async (newName: string, newEmail: string, cpf?: string, phone?: string) => {
+    const currentUid = auth.currentUser?.uid || `user-${Date.now()}`;
+    const newProfile: UserProfile = {
+      uid: currentUid,
       name: newName,
+      email: newEmail,
+      document: cpf || '000.***.***-00',
+      accountNumber: `${Math.floor(10000 + Math.random() * 89999)}-${Math.floor(1 + Math.random() * 9)}`,
+      agency: '0001',
+      bankCode: '592 - LeadsPay S.A.',
+      balance: 0.00,
+      investedBalance: 0.00,
       pixKeys: [
-        ...prev.pixKeys,
-        { type: 'email', value: newEmail }
-      ]
-    }));
+        { type: 'email', value: newEmail },
+        { type: 'phone', value: phone || '+55 11 98842-7719' },
+        { type: 'random', value: `lp-${Math.random().toString(36).substring(2, 8)}` }
+      ],
+      biometricEnabled: true,
+      streetProtectionMode: false,
+      dailyPixLimit: 10000.00,
+      nightlyPixLimit: 1000.00
+    };
+
+    setUserProfile(newProfile);
+
+    if (auth.currentUser) {
+      try {
+        await setDoc(doc(db, 'users', auth.currentUser.uid), newProfile);
+      } catch (err) {
+        console.error('Failed to save user profile to Firestore:', err);
+      }
+    }
+
     setCurrentScreen('bank');
     setActiveTab('dashboard');
   };
@@ -242,6 +449,7 @@ export default function App() {
               }}
               onOpenSupport={() => setIsSupportOpen(true)}
               onOpenToken={() => setIsTokenModalOpen(true)}
+              onGoogleLogin={handleGoogleSignIn}
             />
           </div>
         </div>
@@ -259,7 +467,7 @@ export default function App() {
             onToggleBalance={() => setShowBalance(!showBalance)}
             onOpenSecurity={() => setIsSecurityOpen(true)}
             onOpenSupport={() => setIsSupportOpen(true)}
-            onLogout={() => setCurrentScreen('onboarding')}
+            onLogout={handleLogout}
             isMobileFrame={isMobileFrame}
             onToggleMobileFrame={() => setIsMobileFrame(!isMobileFrame)}
           />
@@ -343,7 +551,7 @@ export default function App() {
                     onOpenSecurity={() => setIsSecurityOpen(true)}
                     onOpenSupport={() => setIsSupportOpen(true)}
                     onOpenPix={() => setIsPixModalOpen(true)}
-                    onLogout={() => setCurrentScreen('onboarding')}
+                    onLogout={handleLogout}
                   />
                 </motion.div>
               )}
@@ -360,9 +568,9 @@ export default function App() {
                   <div className="mb-4">
                     <button
                       onClick={() => setActiveTab('dashboard')}
-                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1.5 transition-colors"
+                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1 transition-colors"
                     >
-                      <span>← Voltar para Conta</span>
+                      ← Voltar para Minha Conta
                     </button>
                   </div>
                   <FinancialManagementView
@@ -373,7 +581,7 @@ export default function App() {
                 </motion.div>
               )}
 
-              {/* SUB-VIEW: DEV API & WEBHOOKS */}
+              {/* SUB-VIEW: API DEVELOPER PORTAL */}
               {activeTab === 'devapi' && (
                 <motion.div
                   key="devapi"
@@ -385,9 +593,9 @@ export default function App() {
                   <div className="mb-4">
                     <button
                       onClick={() => setActiveTab('dashboard')}
-                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1.5 transition-colors"
+                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1 transition-colors"
                     >
-                      <span>← Voltar para Conta</span>
+                      ← Voltar para Minha Conta
                     </button>
                   </div>
                   <DeveloperApiView
@@ -401,17 +609,18 @@ export default function App() {
             </AnimatePresence>
           </main>
 
-          {/* Floating Pill Bottom Navigation Bar */}
+          {/* Floating Mobile Bottom Navigation Dock */}
           <BottomNavBar
             currentTab={activeTab}
-            onSelectTab={(tab) => setActiveTab(tab)}
+            onSelectTab={(tab: MainTab) => setActiveTab(tab)}
             onOpenLeadsTap={() => setIsTapToPayOpen(true)}
           />
         </div>
       )}
 
-      {/* Global Interactive Feature Modals */}
-      {/* 1. Pix Modal */}
+      {/* GLOBAL MODALS */}
+
+      {/* 1. Pix Modal (Instant transfers, QR Code, Receive, Key Management) */}
       <PixModal
         isOpen={isPixModalOpen}
         onClose={() => setIsPixModalOpen(false)}
@@ -420,7 +629,7 @@ export default function App() {
         onRequestBiometric={requestBiometric}
       />
 
-      {/* 2. LeadsTap Contactless Payment Modal */}
+      {/* 2. LeadsTap Contactless Tap-to-Pay on Phone (Point-of-Sale) */}
       <LeadsTapModal
         isOpen={isTapToPayOpen}
         onClose={() => setIsTapToPayOpen(false)}
@@ -439,10 +648,18 @@ export default function App() {
         onClose={() => setIsSecurityOpen(false)}
         userProfile={userProfile}
         onToggleStreetProtection={() => {
-          setUserProfile(prev => ({ ...prev, streetProtectionMode: !prev.streetProtectionMode }));
+          const nextVal = !userProfile.streetProtectionMode;
+          setUserProfile(prev => ({ ...prev, streetProtectionMode: nextVal }));
+          if (auth.currentUser) {
+            updateUserProfileInDb(auth.currentUser.uid, { streetProtectionMode: nextVal }).catch(console.error);
+          }
         }}
         onToggleBiometrics={() => {
-          setUserProfile(prev => ({ ...prev, biometricEnabled: !prev.biometricEnabled }));
+          const nextVal = !userProfile.biometricEnabled;
+          setUserProfile(prev => ({ ...prev, biometricEnabled: nextVal }));
+          if (auth.currentUser) {
+            updateUserProfileInDb(auth.currentUser.uid, { biometricEnabled: nextVal }).catch(console.error);
+          }
         }}
         onRequestBiometric={requestBiometric}
       />
@@ -462,11 +679,12 @@ export default function App() {
         onClose={() => setIsTokenModalOpen(false)}
       />
 
-      {/* 7. Open Account Modal */}
+      {/* 7. Open Account Modal with Google Sign-in */}
       <OpenAccountModal
         isOpen={isOpenAccountModalOpen}
         onClose={() => setIsOpenAccountModalOpen(false)}
         onAccountCreated={handleAccountCreated}
+        onGoogleSignIn={handleGoogleSignIn}
       />
     </div>
   );

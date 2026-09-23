@@ -40,10 +40,23 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       {/* Left: User Avatar & Account info */}
       <div className="flex items-center gap-3">
         <div className="relative">
-          <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#132217] to-[#00e676]/30 border border-[#00e676]/50 flex items-center justify-center text-white font-bold text-sm shadow-[0_0_10px_rgba(0,230,118,0.2)]">
-            HM
-          </div>
-          <span className="absolute bottom-0 right-0 w-3 h-3 bg-[#00e676] rounded-full border-2 border-black" />
+          {userProfile.photoURL ? (
+            <img
+              src={userProfile.photoURL}
+              alt={userProfile.name}
+              className="w-10 h-10 rounded-full object-cover border border-[#a3e635]/60 shadow-[0_0_10px_rgba(163,230,53,0.3)]"
+            />
+          ) : (
+            <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#132217] to-[#a3e635]/30 border border-[#a3e635]/50 flex items-center justify-center text-white font-bold text-sm shadow-[0_0_10px_rgba(163,230,53,0.2)]">
+              {userProfile.name
+                .split(' ')
+                .slice(0, 2)
+                .map(n => n[0])
+                .join('')
+                .toUpperCase() || 'LP'}
+            </div>
+          )}
+          <span className="absolute bottom-0 right-0 w-3 h-3 bg-[#a3e635] rounded-full border-2 border-black" />
         </div>
 
         <div>
