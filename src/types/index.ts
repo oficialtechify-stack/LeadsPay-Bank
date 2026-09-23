@@ -1,0 +1,81 @@
+export type TransactionType = 'pix_in' | 'pix_out' | 'tap_to_pay' | 'card_payment' | 'bill_payment' | 'investment';
+
+export interface Transaction {
+  id: string;
+  type: TransactionType;
+  title: string;
+  description: string;
+  amount: number;
+  timestamp: string; // ISO format or display
+  dateFormatted: string;
+  category: 'Vendas' | 'Alimentação' | 'Serviços' | 'Transporte' | 'Lojas' | 'Transferência' | 'Outros';
+  status: 'completed' | 'pending' | 'failed';
+  recipientOrSender?: string;
+  documentId?: string;
+  e2eId?: string;
+  authMethod?: 'Biometria (Face ID)' | 'LeadsTap NFC' | 'Token Instantâneo' | 'Chave Pix';
+}
+
+export interface VirtualCard {
+  id: string;
+  name: string;
+  type: 'virtual' | 'physical';
+  cardNumber: string;
+  cardHolder: string;
+  expiry: string;
+  cvv: string;
+  cvvExpiresInSeconds: number;
+  isFrozen: boolean;
+  limit: number;
+  usedLimit: number;
+  brand: 'mastercard' | 'visa';
+  color: string;
+  category: 'Uso Diário' | 'Assinaturas' | 'Compras Online' | 'Corporativo';
+}
+
+export interface FinancialCategory {
+  name: string;
+  amount: number;
+  percentage: number;
+  color: string;
+  iconName: string;
+  budget: number;
+}
+
+export interface DeveloperApiKey {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  fullKey?: string;
+  environment: 'production' | 'sandbox';
+  createdAt: string;
+  lastUsed: string;
+}
+
+export interface WebhookConfig {
+  id: string;
+  url: string;
+  secret: string;
+  events: string[];
+  isActive: boolean;
+  lastDeliveryStatus?: '200_ok' | 'failed' | 'pending';
+  lastDeliveryTime?: string;
+}
+
+export interface UserProfile {
+  name: string;
+  document: string; // CPF or CNPJ
+  accountNumber: string;
+  agency: string;
+  bankCode: string;
+  balance: number;
+  investedBalance: number;
+  pixKeys: {
+    type: 'cpf' | 'email' | 'phone' | 'random';
+    value: string;
+  }[];
+  biometricEnabled: boolean;
+  streetProtectionMode: boolean; // Modo Rua
+  dailyPixLimit: number;
+  nightlyPixLimit: number;
+}

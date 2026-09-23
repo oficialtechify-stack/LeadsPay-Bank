@@ -1,0 +1,6 @@
+{
+  "name": "LeadsPay Bank",
+  "description": "Banco digital completo com transações Pix instantâneas, pagamento por aproximação no celular (Tap to Pay), cartão virtual dinâmico, gestão financeira inteligente, segurança biométrica e API para desenvolvedores.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
