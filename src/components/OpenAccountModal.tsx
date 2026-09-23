@@ -9,13 +9,15 @@ interface OpenAccountModalProps {
   onClose: () => void;
   onAccountCreated: (name: string, email: string, cpf?: string, phone?: string) => void;
   onGoogleSignIn: () => Promise<void>;
+  onOpenLogin?: () => void;
 }
 
 export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
   isOpen,
   onClose,
   onAccountCreated,
-  onGoogleSignIn
+  onGoogleSignIn,
+  onOpenLogin
 }) => {
   const [name, setName] = useState('');
   const [cpf, setCpf] = useState('');
@@ -230,6 +232,24 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
                   </button>
                 </div>
               </form>
+
+              {onOpenLogin && (
+                <div className="mt-4 pt-3 border-t border-white/10 text-center">
+                  <p className="text-xs text-slate-400">
+                    Já tem uma conta LeadsPay?{' '}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenLogin();
+                      }}
+                      className="text-[#a3e635] font-semibold hover:underline cursor-pointer ml-1"
+                    >
+                      Acessar conta
+                    </button>
+                  </p>
+                </div>
+              )}
             </div>
           ) : (
             <div className="py-8 text-center space-y-3">

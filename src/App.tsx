@@ -16,6 +16,7 @@ import { SecurityCenterModal } from './components/SecurityCenterModal';
 import { BiometricAuthModal } from './components/BiometricAuthModal';
 import { TokenModal } from './components/TokenModal';
 import { OpenAccountModal } from './components/OpenAccountModal';
+import { AccessAccountModal } from './components/AccessAccountModal';
 import { NotificationToast, BankNotification } from './components/NotificationToast';
 import { 
   initialUserProfile, 
@@ -68,6 +69,7 @@ export default function App() {
   const [isSecurityOpen, setIsSecurityOpen] = useState(false);
   const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
   const [isOpenAccountModalOpen, setIsOpenAccountModalOpen] = useState(false);
+  const [isAccessAccountModalOpen, setIsAccessAccountModalOpen] = useState(false);
   const [notification, setNotification] = useState<BankNotification | null>(null);
 
   // Biometric gate modal
@@ -371,23 +373,23 @@ export default function App() {
     soundEffects.playPixSuccess();
   };
 
+  // Handle manual or biometric access from access modal
+  const handleManualAccess = (identifier: string) => {
+    requestBiometric('Acessar LeadsPay Bank', () => {
+      if (identifier && identifier !== 'Biometria') {
+        setUserProfile(prev => ({
+          ...prev,
+          name: identifier.includes('@') ? identifier.split('@')[0] : prev.name
+        }));
+      }
+      setCurrentScreen('bank');
+      setActiveTab('dashboard');
+    });
+  };
+
   // Handle access from login entry screen
   const handleAccessFromOnboarding = () => {
-    // If not authenticated, prompt Google login or allow direct biometric guest access
-    if (!auth.currentUser) {
-      handleGoogleSignIn().catch(() => {
-        // Fallback to biometric check if user cancels or prefers local access
-        requestBiometric('Acessar LeadsPay Bank', () => {
-          setCurrentScreen('bank');
-          setActiveTab('dashboard');
-        });
-      });
-    } else {
-      requestBiometric('Acessar LeadsPay Bank', () => {
-        setCurrentScreen('bank');
-        setActiveTab('dashboard');
-      });
-    }
+    setIsAccessAccountModalOpen(true);
   };
 
   // Handle account created from registration modal
@@ -449,7 +451,6 @@ export default function App() {
               }}
               onOpenSupport={() => setIsSupportOpen(true)}
               onOpenToken={() => setIsTokenModalOpen(true)}
-              onGoogleLogin={handleGoogleSignIn}
             />
           </div>
         </div>
@@ -679,12 +680,28 @@ export default function App() {
         onClose={() => setIsTokenModalOpen(false)}
       />
 
-      {/* 7. Open Account Modal with Google Sign-in */}
+      {/* 7. Access Account Modal (Login with Google or credentials) */}
+      <AccessAccountModal
+        isOpen={isAccessAccountModalOpen}
+        onClose={() => setIsAccessAccountModalOpen(false)}
+        onGoogleSignIn={handleGoogleSignIn}
+        onManualAccess={handleManualAccess}
+        onOpenRegister={() => {
+          setIsAccessAccountModalOpen(false);
+          setIsOpenAccountModalOpen(true);
+        }}
+      />
+
+      {/* 8. Open Account Modal with Google Sign-in & Registration */}
       <OpenAccountModal
         isOpen={isOpenAccountModalOpen}
         onClose={() => setIsOpenAccountModalOpen(false)}
         onAccountCreated={handleAccountCreated}
         onGoogleSignIn={handleGoogleSignIn}
+        onOpenLogin={() => {
+          setIsOpenAccountModalOpen(false);
+          setIsAccessAccountModalOpen(true);
+        }}
       />
     </div>
   );
