@@ -44,10 +44,8 @@ import {
   clearFakeApplications,
   getLocalLoginBanners,
   saveLoginBannersToFirestore,
-  DEFAULT_LOGIN_BANNERS,
-  getAllUserProfilesWithBalances
+  DEFAULT_LOGIN_BANNERS
 } from '../services/firebaseBankService';
-import { UserProfile } from '../types';
 
 interface AdminReviewModalProps {
   isOpen: boolean;
@@ -62,8 +60,8 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
   currentUserEmail,
   onApplicationApproved
 }) => {
-  // Navigation tabs in Admin: KYC Review vs Contas & Saldos vs Login Screen Banners
-  const [adminTab, setAdminTab] = useState<'kyc' | 'users' | 'banners'>('kyc');
+  // Navigation tabs in Admin: KYC Review vs Login Screen Banners
+  const [adminTab, setAdminTab] = useState<'kyc' | 'banners'>('kyc');
 
   // KYC Review State
   const [applications, setApplications] = useState<AccountApplication[]>([]);
@@ -71,10 +69,6 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
   const [filterStatus, setFilterStatus] = useState<'all' | ApplicationStatus>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [zoomedImage, setZoomedImage] = useState<{ url: string; title: string } | null>(null);
-
-  // Users & Balances Management State ("só aparece quanto o usuário tem de dinheiro na conta")
-  const [userProfiles, setUserProfiles] = useState<UserProfile[]>([]);
-  const [usersSearch, setUsersSearch] = useState('');
 
   // Banners Management State (3 automatic cycling images for login/access screen)
   const [banners, setBanners] = useState<[string, string, string]>(() => getLocalLoginBanners());
@@ -100,9 +94,6 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
     setApplications(initialApps);
     setSelectedApp(initialApps[0] || null);
 
-    const initialProfiles = getAllUserProfilesWithBalances();
-    setUserProfiles(initialProfiles);
-
     const unsub = subscribeToAllApplications((apps) => {
       setApplications(apps);
       if (selectedApp) {
@@ -112,15 +103,10 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
       } else if (apps.length > 0) {
         setSelectedApp(apps[0]);
       }
-      setUserProfiles(getAllUserProfilesWithBalances());
     });
 
     return unsub;
   }, [isOpen]);
-
-  const refreshUserProfiles = () => {
-    setUserProfiles(getAllUserProfilesWithBalances());
-  };
 
   // Preview carousel for banners tab
   useEffect(() => {
@@ -304,20 +290,6 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
     }
   };
 
-  const filteredUserProfiles = userProfiles.filter((u) => {
-    if (!usersSearch.trim()) return true;
-    const q = usersSearch.toLowerCase();
-    return (
-      (u.name && u.name.toLowerCase().includes(q)) ||
-      (u.preferredName && u.preferredName.toLowerCase().includes(q)) ||
-      (u.email && u.email.toLowerCase().includes(q)) ||
-      (u.document && u.document.includes(q)) ||
-      (u.accountNumber && u.accountNumber.includes(q))
-    );
-  });
-
-  const totalCustody = userProfiles.reduce((acc, u) => acc + (u.balance || 0), 0);
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/90 backdrop-blur-md">
       <motion.div
@@ -347,7 +319,7 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
             </div>
           </div>
 
-          {/* MAIN TABS SELECTOR: KYC vs USERS & BALANCES vs BANNERS */}
+          {/* MAIN TABS SELECTOR: KYC vs BANNERS */}
           <div className="flex items-center gap-1.5 p-1 bg-black/60 border border-white/10 rounded-2xl">
             <button
               onClick={() => setAdminTab('kyc')}
@@ -358,27 +330,12 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
               }`}
             >
               <CreditCard className="w-3.5 h-3.5" />
-              <span>Análise KYC ({applications.length})</span>
+              <span>Análise KYC & Contas</span>
               {pendingCount > 0 && (
                 <span className="px-1.5 py-0.2 bg-red-600 text-white rounded-full text-[10px] font-bold">
                   {pendingCount}
                 </span>
               )}
-            </button>
-
-            <button
-              onClick={() => {
-                setAdminTab('users');
-                refreshUserProfiles();
-              }}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
-                adminTab === 'users'
-                  ? 'bg-[#00e676] text-black shadow-[0_0_15px_rgba(0,230,118,0.4)]'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <DollarSign className="w-3.5 h-3.5" />
-              <span>Contas & Saldos ({userProfiles.length})</span>
             </button>
 
             <button
@@ -390,7 +347,7 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
               }`}
             >
               <ImageIcon className="w-3.5 h-3.5" />
-              <span>3 Banners da Tela Inicial</span>
+              <span>Imagens da Tela Inicial (3 Banners)</span>
             </button>
           </div>
 
@@ -922,136 +879,6 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
                   </div>
                 );
               })}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 3: USERS & BALANCES ONLY ("nesta parte só aparece quanto o usuário tem de dinheiro na conta") */}
-        {adminTab === 'users' && (
-          <div className="flex-1 p-6 overflow-y-auto bg-[#070b09] space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-white/10">
-              <div>
-                <h3 className="text-lg font-bold text-white font-display flex items-center gap-2">
-                  <DollarSign className="w-5 h-5 text-[#00e676]" />
-                  <span>Contas e Saldos dos Clientes</span>
-                </h3>
-                <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
-                  Visão consolidada do saldo em conta de cada usuário. Conforme solicitado, transações Pix não são exibidas aqui — apenas os dados do correntista e o valor que ele possui de saldo disponível.
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={refreshUserProfiles}
-                className="self-start sm:self-auto py-2 px-3.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-300 flex items-center gap-2 transition-colors cursor-pointer"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Atualizar Saldos</span>
-              </button>
-            </div>
-
-            {/* Metrics Row */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10">
-                <span className="text-[11px] text-slate-400 font-medium block mb-1">
-                  Saldo Total Custodiado
-                </span>
-                <span className="font-mono text-2xl font-bold text-[#00e676]">
-                  R$ {totalCustody.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                </span>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10">
-                <span className="text-[11px] text-slate-400 font-medium block mb-1">
-                  Total de Contas Registradas
-                </span>
-                <span className="font-mono text-2xl font-bold text-white">
-                  {userProfiles.length}
-                </span>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30">
-                <span className="text-[11px] text-emerald-300 font-medium block mb-1">
-                  Política de Exibição
-                </span>
-                <span className="text-xs text-slate-300 leading-relaxed block">
-                  Exibição restrita a saldo e dados do titular (sem histórico de Pix).
-                </span>
-              </div>
-            </div>
-
-            {/* Search Bar */}
-            <div className="relative">
-              <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Buscar correntista por nome, apelido, CPF, e-mail ou conta..."
-                value={usersSearch}
-                onChange={(e) => setUsersSearch(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 bg-black/60 border border-white/10 rounded-xl text-xs text-white placeholder-slate-500 outline-none focus:border-emerald-500"
-              />
-            </div>
-
-            {/* User List */}
-            <div className="space-y-3">
-              {filteredUserProfiles.length === 0 ? (
-                <div className="p-12 rounded-2xl bg-white/[0.02] border border-white/10 text-center space-y-2">
-                  <User className="w-10 h-10 text-slate-600 mx-auto" />
-                  <p className="font-semibold text-xs text-slate-300">Nenhum cliente com conta ativa no momento</p>
-                  <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
-                    Assim que uma proposta for aprovada na aba KYC, o cliente e seu saldo em conta aparecerão automaticamente aqui.
-                  </p>
-                </div>
-              ) : (
-                filteredUserProfiles.map((user) => (
-                  <div
-                    key={user.uid || user.email}
-                    className="p-4 rounded-2xl bg-white/[0.03] hover:bg-white/[0.05] border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-colors"
-                  >
-                    <div className="flex items-center gap-3.5 min-w-0">
-                      <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-bold shrink-0 overflow-hidden text-base">
-                        {user.photoURL ? (
-                          <img src={user.photoURL} alt={user.name} className="w-full h-full object-cover" />
-                        ) : (
-                          user.name.charAt(0).toUpperCase()
-                        )}
-                      </div>
-                      <div className="min-w-0 space-y-1">
-                        <div className="flex items-center gap-2">
-                          <h4 className="font-bold text-sm text-white truncate">{user.name}</h4>
-                          {user.preferredName && (
-                            <span className="text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono">
-                              "{user.preferredName}"
-                            </span>
-                          )}
-                          <span className="text-[9px] bg-emerald-500/20 text-[#00e676] border border-emerald-500/30 px-1.5 py-0.5 rounded-full uppercase font-bold">
-                            Conta Aprovada
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3 text-[11px] text-slate-400 flex-wrap">
-                          <span className="font-mono">CPF: {user.document || '---'}</span>
-                          <span>·</span>
-                          <span className="truncate">{user.email}</span>
-                          <span>·</span>
-                          <span className="font-mono text-slate-300">
-                            Ag: {user.agency || '0001'} | Conta: {user.accountNumber || '---'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* ONLY DISPLAY THE CURRENT MONEY IN THE ACCOUNT */}
-                    <div className="text-left sm:text-right shrink-0 bg-black/40 sm:bg-transparent p-3 sm:p-0 rounded-xl border border-white/5 sm:border-0 min-w-[160px]">
-                      <span className="text-[10px] text-slate-400 block uppercase tracking-wider font-semibold">
-                        Dinheiro na Conta
-                      </span>
-                      <span className="font-mono text-xl sm:text-2xl font-bold text-[#00e676]">
-                        R$ {(user.balance || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                  </div>
-                ))
-              )}
             </div>
           </div>
         )}
