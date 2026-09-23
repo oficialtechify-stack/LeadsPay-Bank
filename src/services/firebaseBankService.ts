@@ -13,6 +13,72 @@ import {
   User
 } from '../firebase/config';
 import { UserProfile, Transaction, VirtualCard, AccountApplication } from '../types';
+import defaultBanner1 from '../assets/images/lifestyle_card_terminal_1790116104071.jpg';
+import defaultBanner2 from '../assets/images/tap_to_pay_mobile_1790116091201.jpg';
+import defaultBanner3 from '../assets/images/fintech_card_luxury_1790116114503.jpg';
+
+export const DEFAULT_LOGIN_BANNERS: [string, string, string] = [
+  defaultBanner1,
+  defaultBanner2,
+  defaultBanner3
+];
+
+export function getLocalLoginBanners(): [string, string, string] {
+  try {
+    const raw = localStorage.getItem('leadspay_login_banners');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length >= 3 && parsed[0]) {
+        return [parsed[0], parsed[1], parsed[2]];
+      }
+    }
+  } catch (e) {
+    console.warn('Error reading local login banners:', e);
+  }
+  return DEFAULT_LOGIN_BANNERS;
+}
+
+export function saveLocalLoginBanners(banners: [string, string, string]): void {
+  try {
+    localStorage.setItem('leadspay_login_banners', JSON.stringify(banners));
+  } catch (e) {
+    console.error('Error saving local login banners:', e);
+  }
+}
+
+export async function saveLoginBannersToFirestore(banners: [string, string, string]): Promise<void> {
+  saveLocalLoginBanners(banners);
+  try {
+    const bannerRef = doc(db, 'app_settings', 'login_banners');
+    await setDoc(bannerRef, {
+      banners,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (err) {
+    console.warn('Could not sync login banners to cloud Firestore (saved locally):', err);
+  }
+}
+
+export function subscribeToLoginBanners(callback: (banners: [string, string, string]) => void): () => void {
+  callback(getLocalLoginBanners());
+  const bannerRef = doc(db, 'app_settings', 'login_banners');
+  return onSnapshot(
+    bannerRef,
+    (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data && Array.isArray(data.banners) && data.banners.length >= 3) {
+          const freshBanners: [string, string, string] = [data.banners[0], data.banners[1], data.banners[2]];
+          saveLocalLoginBanners(freshBanners);
+          callback(freshBanners);
+        }
+      }
+    },
+    (err) => {
+      console.warn('Firestore banners sync error (using local fallback):', err.message);
+    }
+  );
+}
 
 export const generateAccountNumber = (): string => {
   const main = Math.floor(10000 + Math.random() * 89999);
@@ -80,7 +146,13 @@ export const createDefaultVirtualCard = (uid: string, cardHolderName: string): V
 export function getLocalUserProfile(uid: string): UserProfile | null {
   try {
     const raw = localStorage.getItem(`leadspay_user_${uid}`);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const profile = JSON.parse(raw) as UserProfile;
+    if (typeof profile.balance === 'number' && profile.balance < 0) {
+      profile.balance = 0;
+      saveLocalUserProfile(uid, profile);
+    }
+    return profile;
   } catch {
     return null;
   }
@@ -88,7 +160,11 @@ export function getLocalUserProfile(uid: string): UserProfile | null {
 
 export function saveLocalUserProfile(uid: string, profile: UserProfile): void {
   try {
-    localStorage.setItem(`leadspay_user_${uid}`, JSON.stringify(profile));
+    const sanitized = {
+      ...profile,
+      balance: Math.max(0, profile.balance || 0)
+    };
+    localStorage.setItem(`leadspay_user_${uid}`, JSON.stringify(sanitized));
   } catch (err) {
     console.error('Error saving local profile:', err);
   }
@@ -275,7 +351,7 @@ export function subscribeToUserAccount(
  * Record a transaction into Firestore and update the user's balance
  */
 export async function recordTransaction(uid: string, tx: Transaction, currentBalance: number): Promise<void> {
-  const newBalance = currentBalance + tx.amount;
+  const newBalance = Math.max(0, currentBalance + tx.amount);
 
   // 1. Update local storage for immediate individual persistence
   const currentTxs = getLocalTransactions(uid);
@@ -347,12 +423,28 @@ export const isUserAdmin = (email?: string | null): boolean => {
   return email?.toLowerCase().trim() === ADMIN_EMAIL;
 };
 
+// Filter out demo/mock data helper
+export const isFakeApplication = (app: AccountApplication): boolean => {
+  return (
+    app.id === 'app-demo-1' ||
+    app.id.includes('demo') ||
+    app.fullName === 'Lucas Gabriel Ferreira Mendes' ||
+    app.cpf === '388.492.108-95'
+  );
+};
+
 // Local storage for KYC Applications
 export function getLocalApplications(): AccountApplication[] {
   try {
     const raw = localStorage.getItem('leadspay_all_applications');
     if (!raw) return [];
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw) as AccountApplication[];
+    // Filter out fake demo applications so admin only sees real customer requests
+    const clean = parsed.filter(a => !isFakeApplication(a));
+    if (clean.length !== parsed.length) {
+      saveLocalApplications(clean);
+    }
+    return clean;
   } catch {
     return [];
   }
@@ -360,9 +452,20 @@ export function getLocalApplications(): AccountApplication[] {
 
 export function saveLocalApplications(apps: AccountApplication[]): void {
   try {
-    localStorage.setItem('leadspay_all_applications', JSON.stringify(apps));
+    const clean = apps.filter(a => !isFakeApplication(a));
+    localStorage.setItem('leadspay_all_applications', JSON.stringify(clean));
   } catch (err) {
     console.error('Error saving local applications:', err);
+  }
+}
+
+export function clearFakeApplications(): void {
+  try {
+    const existing = getLocalApplications();
+    const clean = existing.filter(a => !isFakeApplication(a));
+    localStorage.setItem('leadspay_all_applications', JSON.stringify(clean));
+  } catch (err) {
+    console.error('Error clearing fake applications:', err);
   }
 }
 

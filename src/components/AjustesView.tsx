@@ -24,6 +24,7 @@ interface AjustesViewProps {
   onOpenSupport: () => void;
   onOpenPix: () => void;
   onLogout: () => void;
+  onOpenAdminReview?: () => void;
 }
 
 export const AjustesView: React.FC<AjustesViewProps> = ({
@@ -33,8 +34,11 @@ export const AjustesView: React.FC<AjustesViewProps> = ({
   onOpenSecurity,
   onOpenSupport,
   onOpenPix,
-  onLogout
+  onLogout,
+  onOpenAdminReview
 }) => {
+  const isAdmin = userProfile.email?.toLowerCase().trim() === 'rickmarketing81@gmail.com';
+
   return (
     <div className="space-y-5 animate-fadeIn">
       {/* Header */}
@@ -80,6 +84,34 @@ export const AjustesView: React.FC<AjustesViewProps> = ({
         <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 block px-1">
           Funcionalidades & Serviços
         </span>
+
+        {/* Option 0: Painel de Administração & Banners (Exclusive to rickmarketing81@gmail.com) */}
+        {isAdmin && onOpenAdminReview && (
+          <button
+            onClick={onOpenAdminReview}
+            className="w-full p-3.5 rounded-2xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/50 transition-all flex items-center justify-between group shadow-[0_0_20px_rgba(245,158,11,0.15)] cursor-pointer"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-400 flex items-center justify-center group-hover:scale-105 transition-transform">
+                <Sparkles className="w-5 h-5 text-amber-400" />
+              </div>
+              <div className="text-left">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs sm:text-sm font-semibold text-amber-300 block">
+                    Painel do Administrador & Banners
+                  </span>
+                  <span className="text-[9px] bg-amber-400 text-black font-extrabold px-1.5 py-0.2 rounded-full uppercase">
+                    Admin
+                  </span>
+                </div>
+                <span className="text-[11px] text-amber-200/80">
+                  Aprovar contas KYC e gerenciar as 3 imagens da tela de login
+                </span>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-amber-400 group-hover:translate-x-0.5 transition-transform" />
+          </button>
+        )}
 
         {/* Option 1: Gestão Financeira */}
         <button

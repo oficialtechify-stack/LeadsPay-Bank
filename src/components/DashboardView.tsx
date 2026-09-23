@@ -41,6 +41,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenSecurity
 }) => {
   const recentTransactions = transactions.slice(0, 5);
+  // Guarantee that only real available positive balance is displayed in current account
+  const currentAccountBalance = Math.max(0, userProfile.balance || 0);
 
   return (
     <motion.div
@@ -69,7 +71,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {showBalance ? (
               <>
                 <span className="text-xl sm:text-2xl font-normal text-emerald-400 mr-1.5">R$</span>
-                {userProfile.balance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                {currentAccountBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
               </>
             ) : (
               <span className="tracking-widest text-slate-500 text-2xl font-mono">••••••••</span>

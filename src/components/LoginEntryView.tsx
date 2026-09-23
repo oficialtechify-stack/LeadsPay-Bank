@@ -1,10 +1,15 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   ArrowUpRight, 
   Sparkles, 
   KeyRound, 
   ChevronRight
 } from 'lucide-react';
+import { 
+  getLocalLoginBanners, 
+  subscribeToLoginBanners, 
+  DEFAULT_LOGIN_BANNERS 
+} from '../services/firebaseBankService';
 
 interface LoginEntryViewProps {
   onAccessAccount: () => void;
@@ -12,7 +17,6 @@ interface LoginEntryViewProps {
   onOpenQuickPix: () => void;
   onOpenSupport: () => void;
   onOpenToken: () => void;
-  onOpenAdminReview?: () => void;
 }
 
 export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
@@ -20,21 +24,55 @@ export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
   onOpenRegister,
   onOpenQuickPix,
   onOpenSupport,
-  onOpenToken,
-  onOpenAdminReview
+  onOpenToken
 }) => {
+  const [banners, setBanners] = useState<[string, string, string]>(() => getLocalLoginBanners());
+  const [activeSlide, setActiveSlide] = useState(0);
+
+  // Subscribe to live banners configured by the admin in real-time
+  useEffect(() => {
+    const unsub = subscribeToLoginBanners((freshBanners) => {
+      if (freshBanners && freshBanners.length >= 3) {
+        setBanners(freshBanners);
+      }
+    });
+    return unsub;
+  }, []);
+
+  // Auto-play the 3 images carousel every 4.5 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setActiveSlide((prev) => (prev + 1) % 3);
+    }, 4500);
+
+    return () => clearInterval(interval);
+  }, [banners]);
+
   return (
     <div className="relative w-full h-full min-h-[100dvh] flex flex-col justify-between overflow-hidden bg-black text-white select-none">
-      {/* Background Image: Person holding coffee cup with LeadsPay logo & contactless card near payment terminal */}
-      <div className="absolute inset-0 z-0">
-        <img
-          src="/src/assets/images/lifestyle_card_terminal_1790116104071.jpg"
-          alt="LeadsPay Bank"
-          className="w-full h-full object-cover object-center"
-        />
+      {/* 3 AUTOMATIC ROTATING BACKGROUND IMAGES */}
+      <div className="absolute inset-0 z-0 overflow-hidden">
+        {banners.map((imgSrc, idx) => {
+          const isActive = idx === activeSlide;
+          return (
+            <div
+              key={idx}
+              className={`absolute inset-0 transition-opacity duration-1000 ease-in-out ${
+                isActive ? 'opacity-100 scale-100' : 'opacity-0 scale-105 pointer-events-none'
+              } transform transition-transform duration-[4500ms]`}
+            >
+              <img
+                src={imgSrc || DEFAULT_LOGIN_BANNERS[idx]}
+                alt={`LeadsPay Imagem ${idx + 1}`}
+                className="w-full h-full object-cover object-center"
+              />
+            </div>
+          );
+        })}
 
-        {/* Translucent overlay that leaves the background visible through the bottom sheet */}
-        <div className="absolute inset-0 bg-gradient-to-b from-black/80 via-black/20 to-black/40" />
+        {/* Ambient Dark Gradient Overlays for High Legibility and Luxury Feel */}
+        <div className="absolute inset-0 bg-gradient-to-b from-black/85 via-black/35 to-black/90 pointer-events-none" />
+        <div className="absolute inset-0 bg-radial-at-c from-transparent via-black/20 to-black/60 pointer-events-none" />
       </div>
 
       {/* TOP HEADER SECTION */}
@@ -81,12 +119,31 @@ export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
         </p>
       </div>
 
-      {/* MIDDLE SPACER to show the card terminal in the background */}
-      <div className="flex-1 min-h-[30px]" />
+      {/* MIDDLE SECTION WITH 3-IMAGE CAROUSEL INDICATOR PILLS */}
+      <div className="relative z-10 flex-1 flex flex-col items-center justify-end pb-3">
+        {/* Carousel indicators dots */}
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-md border border-white/10 shadow-lg">
+          {[0, 1, 2].map((idx) => {
+            const isCurrent = idx === activeSlide;
+            return (
+              <button
+                key={idx}
+                onClick={() => setActiveSlide(idx)}
+                className={`transition-all duration-300 rounded-full cursor-pointer ${
+                  isCurrent
+                    ? 'w-6 h-1.5 bg-[#00e676] shadow-[0_0_10px_rgba(0,230,118,0.8)]'
+                    : 'w-1.5 h-1.5 bg-white/30 hover:bg-white/60'
+                }`}
+                aria-label={`Ir para banner ${idx + 1}`}
+              />
+            );
+          })}
+        </div>
+      </div>
 
       {/* BOTTOM SHEET / CARD ("Acesse sua conta") - TRANSPARENT GLASS TO REVEAL BACKGROUND */}
       <div className="relative z-10 w-full px-3.5 sm:px-4 pb-2">
-        <div className="w-full bg-black/35 backdrop-blur-md border border-white/15 rounded-[28px] sm:rounded-[32px] p-4 sm:p-5 shadow-[0_15px_45px_rgba(0,0,0,0.7)] text-white">
+        <div className="w-full bg-black/45 backdrop-blur-md border border-white/15 rounded-[28px] sm:rounded-[32px] p-4 sm:p-5 shadow-[0_15px_45px_rgba(0,0,0,0.7)] text-white">
           {/* Header */}
           <div>
             <h2 className="text-base sm:text-lg font-display font-bold text-white tracking-tight">
@@ -98,98 +155,91 @@ export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
           </div>
 
           {/* 4 Quick Action Icons Row with Vertical Dividers */}
-          <div className="flex items-center justify-between my-3 py-1.5 border-y border-white/10">
+          <div className="grid grid-cols-4 my-4 sm:my-5 divide-x divide-white/10">
             {/* 1. Transferir */}
             <button
-              onClick={onOpenQuickPix}
-              className="flex-1 flex flex-col items-center justify-center py-0.5 group transition-all"
+              onClick={onAccessAccount}
+              className="flex flex-col items-center justify-center gap-1.5 px-1 py-1 text-center group cursor-pointer"
             >
-              <div className="text-[#a3e635] mb-1 group-hover:scale-110 transition-transform">
-                <ArrowUpRight className="w-4 h-4 text-[#a3e635] stroke-[2.2]" />
+              <div className="flex items-center justify-center text-white/90 group-hover:text-[#a3e635] transition-colors">
+                <ArrowUpRight className="w-5 h-5 text-white group-hover:text-[#a3e635]" />
               </div>
-              <span className="text-[10px] sm:text-[11px] font-medium text-slate-200">
+              <span className="text-[11px] font-medium text-slate-300 group-hover:text-white transition-colors">
                 Transferir
               </span>
             </button>
 
-            {/* Vertical Divider */}
-            <div className="w-[1px] h-6 bg-white/10 shrink-0" />
-
-            {/* 2. Pagar */}
+            {/* 2. Pagar (Barcode Icon) */}
             <button
-              onClick={onOpenQuickPix}
-              className="flex-1 flex flex-col items-center justify-center py-0.5 group transition-all"
+              onClick={onAccessAccount}
+              className="flex flex-col items-center justify-center gap-1.5 px-1 py-1 text-center group cursor-pointer"
             >
-              <div className="text-[#a3e635] mb-1 group-hover:scale-110 transition-transform">
-                {/* Barcode representation */}
-                <div className="flex items-center gap-[2px] h-4 px-0.5">
-                  <div className="w-[2px] h-4 bg-[#a3e635] rounded-full" />
-                  <div className="w-[1px] h-4 bg-[#a3e635] rounded-full" />
-                  <div className="w-[2.5px] h-4 bg-[#a3e635] rounded-full" />
-                  <div className="w-[1px] h-4 bg-[#a3e635] rounded-full" />
-                  <div className="w-[2px] h-4 bg-[#a3e635] rounded-full" />
+              <div className="flex items-center justify-center text-white/90 group-hover:text-[#a3e635] transition-colors">
+                {/* Clean Barcode Glyphs */}
+                <div className="w-5 h-5 flex items-center justify-center gap-[2.5px]">
+                  <div className="w-[2px] h-4 bg-white group-hover:bg-[#a3e635]" />
+                  <div className="w-[3px] h-4 bg-white group-hover:bg-[#a3e635]" />
+                  <div className="w-[1px] h-4 bg-white group-hover:bg-[#a3e635]" />
+                  <div className="w-[2px] h-4 bg-white group-hover:bg-[#a3e635]" />
+                  <div className="w-[3px] h-4 bg-white group-hover:bg-[#a3e635]" />
                 </div>
               </div>
-              <span className="text-[10px] sm:text-[11px] font-medium text-slate-200">
+              <span className="text-[11px] font-medium text-slate-300 group-hover:text-white transition-colors">
                 Pagar
               </span>
             </button>
 
-            {/* Vertical Divider */}
-            <div className="w-[1px] h-6 bg-white/10 shrink-0" />
-
             {/* 3. Área Pix */}
             <button
               onClick={onOpenQuickPix}
-              className="flex-1 flex flex-col items-center justify-center py-0.5 group transition-all"
+              className="flex flex-col items-center justify-center gap-1.5 px-1 py-1 text-center group cursor-pointer"
             >
-              <div className="text-[#a3e635] mb-1 group-hover:scale-110 transition-transform">
-                {/* Pix Diamond Glyph */}
-                <svg viewBox="0 0 24 24" className="w-4 h-4 fill-none stroke-[#a3e635] stroke-[2]">
-                  <rect x="7" y="7" width="10" height="10" rx="1.5" transform="rotate(45 12 12)" />
-                  <circle cx="12" cy="12" r="1.5" fill="#a3e635" />
-                </svg>
+              <div className="flex items-center justify-center text-white/90 group-hover:text-[#a3e635] transition-colors">
+                {/* Official Pix Diamond Geometry */}
+                <div className="w-4 h-4 border-2 border-white group-hover:border-[#a3e635] rotate-45 rounded-[3px] flex items-center justify-center transition-colors">
+                  <div className="w-1.5 h-1.5 bg-[#a3e635] rounded-full" />
+                </div>
               </div>
-              <span className="text-[10px] sm:text-[11px] font-medium text-slate-200">
+              <span className="text-[11px] font-medium text-slate-300 group-hover:text-white transition-colors">
                 Área Pix
               </span>
             </button>
 
-            {/* Vertical Divider */}
-            <div className="w-[1px] h-6 bg-white/10 shrink-0" />
-
             {/* 4. Token */}
             <button
               onClick={onOpenToken}
-              className="flex-1 flex flex-col items-center justify-center py-0.5 group transition-all"
+              className="flex flex-col items-center justify-center gap-1.5 px-1 py-1 text-center group cursor-pointer"
             >
-              <div className="text-[#a3e635] mb-1 group-hover:scale-110 transition-transform">
-                <KeyRound className="w-4 h-4 text-[#a3e635] stroke-[2.2]" />
+              <div className="flex items-center justify-center text-white/90 group-hover:text-[#a3e635] transition-colors">
+                <KeyRound className="w-4 h-4 text-white group-hover:text-[#a3e635]" />
               </div>
-              <span className="text-[10px] sm:text-[11px] font-medium text-slate-200">
+              <span className="text-[11px] font-medium text-slate-300 group-hover:text-white transition-colors">
                 Token
               </span>
             </button>
           </div>
 
-          {/* Primary Action Button: Acessar conta */}
-          <button
-            onClick={onAccessAccount}
-            className="w-full h-11 sm:h-12 rounded-full bg-[#a3e635] hover:bg-[#92d628] active:scale-[0.98] text-black font-bold text-xs sm:text-sm shadow-[0_0_20px_rgba(163,230,53,0.3)] transition-all flex items-center justify-center cursor-pointer"
-          >
-            <span>Acessar conta</span>
-          </button>
+          {/* Action Buttons: Green Primary & Outlined Secondary */}
+          <div className="space-y-2.5">
+            {/* Green button: Acessar conta */}
+            <button
+              onClick={onAccessAccount}
+              className="w-full py-3.5 px-4 rounded-full bg-[#a3e635] hover:bg-[#84cc16] active:scale-[0.99] text-black font-bold text-sm transition-all duration-200 shadow-[0_4px_20px_rgba(163,230,53,0.35)] cursor-pointer text-center"
+            >
+              Acessar conta
+            </button>
 
-          {/* Secondary Action Button: Abrir uma conta */}
-          <button
-            onClick={onOpenRegister}
-            className="w-full h-10 sm:h-11 rounded-full bg-transparent hover:bg-white/5 active:scale-[0.98] text-[#a3e635] border border-[#a3e635]/60 hover:border-[#a3e635] font-semibold text-xs sm:text-sm transition-all flex items-center justify-center mt-2.5 cursor-pointer"
-          >
-            <span>Abrir uma conta</span>
-          </button>
+            {/* Black button with subtle green border: Abrir uma conta */}
+            <button
+              onClick={onOpenRegister}
+              className="w-full py-3.5 px-4 rounded-full bg-black/40 hover:bg-black/70 active:scale-[0.99] border border-[#a3e635]/80 hover:border-[#a3e635] text-[#a3e635] hover:text-[#bef264] font-bold text-sm transition-all duration-200 cursor-pointer text-center"
+            >
+              Abrir uma conta
+            </button>
+          </div>
 
-          {/* Help link / Sparkle footer row */}
-          <div className="flex items-center justify-between pt-3 mt-0.5">
+          {/* Footer inside the card: Precisa de ajuda? */}
+          <div className="mt-4 pt-3 border-t border-white/10 flex items-center justify-between">
             <button
               onClick={onOpenSupport}
               className="text-[11px] sm:text-xs text-[#a0ada3] hover:text-white transition-colors cursor-pointer"
@@ -208,25 +258,11 @@ export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
           </div>
         </div>
 
-        {/* Version outside the card with discreet admin portal */}
-        <div className="flex items-center justify-center gap-3 py-2">
+        {/* Clean Version tag without admin kyc button */}
+        <div className="flex items-center justify-center py-2">
           <span className="text-[10px] font-mono text-slate-500 tracking-wider">
             v:2.1.20
           </span>
-          {onOpenAdminReview && (
-            <>
-              <span className="text-slate-600 text-xs">·</span>
-              <button
-                type="button"
-                onClick={onOpenAdminReview}
-                className="text-[10px] text-slate-500 hover:text-amber-400 transition-colors flex items-center gap-1 cursor-pointer"
-                title="Acesso exclusivo do Administrador rickmarketing81@gmail.com"
-              >
-                <Sparkles className="w-3 h-3 text-amber-400" />
-                <span>Admin KYC</span>
-              </button>
-            </>
-          )}
         </div>
       </div>
     </div>

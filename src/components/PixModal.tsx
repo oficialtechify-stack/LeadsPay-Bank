@@ -13,7 +13,8 @@ import {
   Sparkles, 
   ShieldCheck, 
   User, 
-  ArrowRight
+  ArrowRight,
+  AlertCircle
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { soundEffects } from '../utils/audio';
@@ -54,18 +55,55 @@ export const PixModal: React.FC<PixModalProps> = ({
   const [dailyLimit, setDailyLimit] = useState(userProfile.dailyPixLimit);
   const [nightlyLimit, setNightlyLimit] = useState(userProfile.nightlyPixLimit);
   const [limitsSaved, setLimitsSaved] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
+  const availableBalance = Math.max(0, userProfile.balance || 0);
+
   // Handle Send Confirmation
   const handleProceedConfirm = () => {
+    setSendError(null);
     const amount = parseFloat(amountStr) || 0;
-    if (amount <= 0 || !pixKey.trim()) return;
+    if (amount <= 0) {
+      setSendError('Informe um valor de Pix válido maior que zero.');
+      return;
+    }
+    if (!pixKey.trim()) {
+      setSendError('Por favor, informe a chave Pix do destinatário.');
+      return;
+    }
+    if (amount > availableBalance) {
+      setSendError(
+        `Saldo insuficiente. Seu saldo disponível é de R$ ${availableBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}. Não é possível enviar um Pix maior do que o saldo em conta.`
+      );
+      return;
+    }
 
     // Simulate looking up key
     const detectedName = recipientName.trim() || 'Ana Paula Medeiros';
     setRecipientName(detectedName);
     setSendStep('confirm');
+  };
+
+  const handleAddTestFunds = (amount = 500) => {
+    const now = new Date();
+    const tx: Transaction = {
+      id: 'tx-pix-in-' + Date.now(),
+      type: 'pix_in',
+      title: 'Pix Recebido',
+      description: 'Crédito de Saldo em Conta',
+      amount: amount,
+      timestamp: now.toISOString(),
+      dateFormatted: 'Hoje às ' + now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+      category: 'Transferência',
+      status: 'completed',
+      recipientOrSender: 'Depósito Instantâneo',
+      e2eId: 'E592' + Date.now() + 'DEP7701',
+      authMethod: 'Chave Pix'
+    };
+    onNewTransaction(tx);
+    setSendError(null);
   };
 
   const handleExecuteSend = () => {
@@ -223,9 +261,25 @@ export const PixModal: React.FC<PixModalProps> = ({
                       />
                     </div>
                     <span className="text-[11px] text-slate-400 mt-1 block">
-                      Saldo disponível: <strong className="text-emerald-400 font-mono">R$ {userProfile.balance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong>
+                      Saldo disponível: <strong className="text-emerald-400 font-mono">R$ {availableBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong>
                     </span>
+                    {availableBalance === 0 && (
+                      <button
+                        type="button"
+                        onClick={() => handleAddTestFunds(500)}
+                        className="text-[11px] text-[#00e676] hover:underline mt-2 font-medium cursor-pointer"
+                      >
+                        + Adicionar R$ 500,00 de saldo para testar
+                      </button>
+                    )}
                   </div>
+
+                  {sendError && (
+                    <div className="p-3 bg-red-950/70 border border-red-500/50 rounded-xl text-red-200 text-xs flex items-start gap-2 animate-shake">
+                      <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                      <span>{sendError}</span>
+                    </div>
+                  )}
 
                   {/* Quick Value Chips */}
                   <div className="flex items-center justify-center gap-2">

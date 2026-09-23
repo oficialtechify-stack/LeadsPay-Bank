@@ -97,6 +97,9 @@ export default function App() {
       if (currentUser) {
         // 1. Immediately provide individual user profile (from local cache or fresh creation)
         let profile = getLocalUserProfile(currentUser.uid);
+        if (profile) {
+          profile.balance = Math.max(0, profile.balance || 0);
+        }
         if (!profile) {
           profile = createInitialUserProfile({
             uid: currentUser.uid,
@@ -117,6 +120,7 @@ export default function App() {
             setUserProfile(prev => ({
               ...prev,
               ...updatedProfile,
+              balance: Math.max(0, updatedProfile.balance || 0),
               uid: currentUser.uid
             }));
           },
@@ -227,21 +231,23 @@ export default function App() {
   // Handle New Transaction (Pix, Tap to Pay, Card)
   const handleNewTransaction = async (newTx: Transaction) => {
     const currentUid = auth.currentUser?.uid || userProfile.uid;
+    const currentBalance = Math.max(0, userProfile.balance || 0);
+    const nextBalance = Math.max(0, currentBalance + newTx.amount);
 
     if (currentUid) {
       try {
-        await recordTransaction(currentUid, newTx, userProfile.balance);
+        await recordTransaction(currentUid, newTx, currentBalance);
       } catch (err) {
         console.error('Failed to record transaction to Firestore:', err);
         // Optimistic fallback
         setTransactions(prev => [newTx, ...prev]);
-        setUserProfile(prev => ({ ...prev, balance: prev.balance + newTx.amount }));
+        setUserProfile(prev => ({ ...prev, balance: nextBalance }));
       }
     } else {
       setTransactions(prev => [newTx, ...prev]);
       setUserProfile(prev => ({
         ...prev,
-        balance: prev.balance + newTx.amount
+        balance: nextBalance
       }));
     }
 
@@ -464,7 +470,6 @@ export default function App() {
               }}
               onOpenSupport={() => setIsSupportOpen(true)}
               onOpenToken={() => setIsTokenModalOpen(true)}
-              onOpenAdminReview={() => setIsAdminReviewModalOpen(true)}
             />
           </div>
         </div>
@@ -568,6 +573,7 @@ export default function App() {
                     onOpenSupport={() => setIsSupportOpen(true)}
                     onOpenPix={() => setIsPixModalOpen(true)}
                     onLogout={handleLogout}
+                    onOpenAdminReview={() => setIsAdminReviewModalOpen(true)}
                   />
                 </motion.div>
               )}
