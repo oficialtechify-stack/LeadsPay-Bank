@@ -81,4 +81,42 @@ export interface UserProfile {
   streetProtectionMode: boolean; // Modo Rua
   dailyPixLimit: number;
   nightlyPixLimit: number;
+  status?: 'pending' | 'approved' | 'needs_revision' | 'rejected';
+  preferredName?: string;
+  birthDate?: string;
+  address?: UserAddress;
+}
+
+export interface UserAddress {
+  cep: string;
+  street: string;
+  number: string;
+  complement?: string;
+  neighborhood: string;
+  city: string;
+  state: string;
+}
+
+export type ApplicationStatus = 'pending' | 'approved' | 'needs_revision' | 'rejected';
+
+export interface AccountApplication {
+  id: string;
+  userId: string;
+  fullName: string;
+  preferredName: string;
+  birthDate: string;
+  cpf: string;
+  email: string;
+  phone: string;
+  address: UserAddress;
+  docFrontPhoto: string;
+  docBackPhoto: string;
+  selfiePhoto: string;
+  status: ApplicationStatus;
+  createdAt: string;
+  updatedAt: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  revisionNotes?: string;
+  requestedRevisions?: string[];
 }

@@ -17,6 +17,7 @@ import { BiometricAuthModal } from './components/BiometricAuthModal';
 import { TokenModal } from './components/TokenModal';
 import { OpenAccountModal } from './components/OpenAccountModal';
 import { AccessAccountModal } from './components/AccessAccountModal';
+import { AdminReviewModal } from './components/AdminReviewModal';
 import { NotificationToast, BankNotification } from './components/NotificationToast';
 import { 
   initialUserProfile, 
@@ -44,7 +45,10 @@ import {
   saveCard,
   updateUserProfile as updateUserProfileInDb,
   createInitialUserProfile,
-  createDefaultVirtualCard
+  createDefaultVirtualCard,
+  getLocalUserProfile,
+  saveLocalUserProfile,
+  saveLocalCards
 } from './services/firebaseBankService';
 
 export default function App() {
@@ -70,6 +74,7 @@ export default function App() {
   const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
   const [isOpenAccountModalOpen, setIsOpenAccountModalOpen] = useState(false);
   const [isAccessAccountModalOpen, setIsAccessAccountModalOpen] = useState(false);
+  const [isAdminReviewModalOpen, setIsAdminReviewModalOpen] = useState(false);
   const [notification, setNotification] = useState<BankNotification | null>(null);
 
   // Biometric gate modal
@@ -90,53 +95,61 @@ export default function App() {
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
+        // 1. Immediately provide individual user profile (from local cache or fresh creation)
+        let profile = getLocalUserProfile(currentUser.uid);
+        if (!profile) {
+          profile = createInitialUserProfile({
+            uid: currentUser.uid,
+            displayName: currentUser.displayName,
+            email: currentUser.email,
+            photoURL: currentUser.photoURL
+          });
+          saveLocalUserProfile(currentUser.uid, profile);
+          const initialCard = createDefaultVirtualCard(currentUser.uid, profile.name);
+          saveLocalCards(currentUser.uid, [initialCard]);
+        }
+        setUserProfile(profile);
+
+        // 2. Subscribe to real-time updates (loads local cache first, then syncs with cloud)
+        if (unsubscribeFirestore) unsubscribeFirestore();
+        unsubscribeFirestore = subscribeToUserAccount(currentUser.uid, {
+          onProfile: (updatedProfile) => {
+            setUserProfile(prev => ({
+              ...prev,
+              ...updatedProfile,
+              uid: currentUser.uid
+            }));
+          },
+          onTransactions: (updatedTxs) => {
+            setTransactions(updatedTxs);
+          },
+          onCards: (updatedCards) => {
+            if (updatedCards.length > 0) {
+              setCards(updatedCards);
+            }
+          }
+        });
+
+        // 3. Try to ensure Firestore cloud document exists in background
         try {
           const userDocRef = doc(db, 'users', currentUser.uid);
           const docSnap = await getDoc(userDocRef);
 
           if (!docSnap.exists()) {
-            const newProfile = createInitialUserProfile({
-              uid: currentUser.uid,
-              displayName: currentUser.displayName,
-              email: currentUser.email,
-              photoURL: currentUser.photoURL
-            });
-            await setDoc(userDocRef, newProfile);
-
-            // Create initial virtual card for the user
-            const initialCard = createDefaultVirtualCard(currentUser.uid, newProfile.name);
+            await setDoc(userDocRef, profile);
+            const initialCard = createDefaultVirtualCard(currentUser.uid, profile.name);
             await setDoc(doc(db, 'users', currentUser.uid, 'cards', initialCard.id), initialCard);
-            setUserProfile(newProfile);
           } else {
             const data = docSnap.data() as UserProfile;
             data.uid = currentUser.uid;
+            saveLocalUserProfile(currentUser.uid, data);
             setUserProfile(data);
           }
-
-          // Subscribe to individual user Firestore documents and subcollections
-          if (unsubscribeFirestore) unsubscribeFirestore();
-          unsubscribeFirestore = subscribeToUserAccount(currentUser.uid, {
-            onProfile: (updatedProfile) => {
-              setUserProfile(prev => ({
-                ...prev,
-                ...updatedProfile,
-                uid: currentUser.uid
-              }));
-            },
-            onTransactions: (updatedTxs) => {
-              setTransactions(updatedTxs);
-            },
-            onCards: (updatedCards) => {
-              if (updatedCards.length > 0) {
-                setCards(updatedCards);
-              }
-            }
-          });
-
-          setCurrentScreen('bank');
         } catch (err) {
-          console.error('Error synchronizing individual user data with Firestore:', err);
+          console.warn('Firestore cloud sync notice (operating in local individual mode):', err);
         }
+
+        setCurrentScreen('bank');
       } else {
         // Clean up Firestore listener on logout
         if (unsubscribeFirestore) {
@@ -451,6 +464,7 @@ export default function App() {
               }}
               onOpenSupport={() => setIsSupportOpen(true)}
               onOpenToken={() => setIsTokenModalOpen(true)}
+              onOpenAdminReview={() => setIsAdminReviewModalOpen(true)}
             />
           </div>
         </div>
@@ -471,6 +485,7 @@ export default function App() {
             onLogout={handleLogout}
             isMobileFrame={isMobileFrame}
             onToggleMobileFrame={() => setIsMobileFrame(!isMobileFrame)}
+            onOpenAdminReview={() => setIsAdminReviewModalOpen(true)}
           />
 
           {/* Main Content Area with Fluid Transitions and bottom padding for the floating navigation dock */}
@@ -701,6 +716,25 @@ export default function App() {
         onOpenLogin={() => {
           setIsOpenAccountModalOpen(false);
           setIsAccessAccountModalOpen(true);
+        }}
+      />
+
+      {/* 9. Admin Review & KYC Compliance Portal (Exclusive to rickmarketing81@gmail.com) */}
+      <AdminReviewModal
+        isOpen={isAdminReviewModalOpen}
+        onClose={() => setIsAdminReviewModalOpen(false)}
+        currentUserEmail={userProfile.email || auth.currentUser?.email}
+        onApplicationApproved={(app) => {
+          if (auth.currentUser && app.userId === auth.currentUser.uid) {
+            setUserProfile(prev => ({
+              ...prev,
+              name: app.fullName,
+              preferredName: app.preferredName,
+              document: app.cpf,
+              birthDate: app.birthDate,
+              status: 'approved'
+            }));
+          }
         }}
       />
     </div>

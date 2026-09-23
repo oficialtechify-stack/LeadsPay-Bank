@@ -39,10 +39,11 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
         onClose();
       }, 700);
     } catch (err: unknown) {
+      console.error('Google Sign-in error:', err);
       setIsGoogleLoading(false);
       const authErr = err as { code?: string; message?: string };
       if (authErr?.code !== 'auth/popup-closed-by-user') {
-        setErrorMessage(err instanceof Error ? err.message : 'Falha na autenticação com o Google.');
+        setErrorMessage('Não foi possível conectar com o Google. Tente novamente ou use seus dados abaixo.');
       }
     }
   };

@@ -12,6 +12,7 @@ interface LoginEntryViewProps {
   onOpenQuickPix: () => void;
   onOpenSupport: () => void;
   onOpenToken: () => void;
+  onOpenAdminReview?: () => void;
 }
 
 export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
@@ -19,7 +20,8 @@ export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
   onOpenRegister,
   onOpenQuickPix,
   onOpenSupport,
-  onOpenToken
+  onOpenToken,
+  onOpenAdminReview
 }) => {
   return (
     <div className="relative w-full h-full min-h-[100dvh] flex flex-col justify-between overflow-hidden bg-black text-white select-none">
@@ -206,11 +208,25 @@ export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
           </div>
         </div>
 
-        {/* Version outside the card */}
-        <div className="text-center py-2">
+        {/* Version outside the card with discreet admin portal */}
+        <div className="flex items-center justify-center gap-3 py-2">
           <span className="text-[10px] font-mono text-slate-500 tracking-wider">
             v:2.1.20
           </span>
+          {onOpenAdminReview && (
+            <>
+              <span className="text-slate-600 text-xs">·</span>
+              <button
+                type="button"
+                onClick={onOpenAdminReview}
+                className="text-[10px] text-slate-500 hover:text-amber-400 transition-colors flex items-center gap-1 cursor-pointer"
+                title="Acesso exclusivo do Administrador rickmarketing81@gmail.com"
+              >
+                <Sparkles className="w-3 h-3 text-amber-400" />
+                <span>Admin KYC</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

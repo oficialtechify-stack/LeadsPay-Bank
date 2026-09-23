@@ -23,6 +23,7 @@ interface HeaderBarProps {
   onLogout: () => void;
   isMobileFrame: boolean;
   onToggleMobileFrame: () => void;
+  onOpenAdminReview?: () => void;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -33,8 +34,10 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   onOpenSupport,
   onLogout,
   isMobileFrame,
-  onToggleMobileFrame
+  onToggleMobileFrame,
+  onOpenAdminReview
 }) => {
+  const isAdmin = userProfile.email?.toLowerCase().trim() === 'rickmarketing81@gmail.com';
   return (
     <header className="w-full bg-[#080c09]/90 backdrop-blur-md border-b border-white/10 px-4 sm:px-6 py-3.5 flex items-center justify-between sticky top-0 z-40">
       {/* Left: User Avatar & Account info */}
@@ -86,6 +89,18 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
       {/* Right: Actions */}
       <div className="flex items-center gap-1.5 sm:gap-2">
+        {/* Admin KYC Portal Button (Exclusive to rickmarketing81@gmail.com) */}
+        {isAdmin && onOpenAdminReview && (
+          <button
+            onClick={onOpenAdminReview}
+            className="px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-300 transition-all flex items-center gap-1.5 text-xs font-bold shadow-[0_0_15px_rgba(245,158,11,0.2)] cursor-pointer"
+            title="Painel de Aprovação KYC de Contas"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline">Admin KYC</span>
+          </button>
+        )}
+
         {/* Toggle Balance Visibility */}
         <button
           onClick={onToggleBalance}
