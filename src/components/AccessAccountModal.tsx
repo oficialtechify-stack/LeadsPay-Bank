@@ -1,14 +1,35 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ShieldCheck, X, Fingerprint, Lock, Mail, ArrowRight, Loader2, CheckCircle2 } from 'lucide-react';
+import { 
+  ShieldCheck, 
+  X, 
+  Fingerprint, 
+  Lock, 
+  Mail, 
+  ArrowRight, 
+  CheckCircle2, 
+  AlertCircle,
+  UserPlus,
+  Loader2
+} from 'lucide-react';
 import { soundEffects } from '../utils/audio';
+import { AccountApplication, UserProfile } from '../types';
+import { 
+  findApplicationByEmailOrCpf, 
+  findUserProfileByEmailOrCpf,
+  getLocalUserApplication,
+  ADMIN_EMAIL,
+  saveRegistrationDraft
+} from '../services/firebaseBankService';
+import { auth } from '../firebase/config';
 
 interface AccessAccountModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onGoogleSignIn: () => Promise<void>;
-  onManualAccess: (identifier: string) => void;
-  onOpenRegister: () => void;
+  onGoogleSignIn?: () => Promise<void>;
+  onManualAccess: (profile?: UserProfile) => void;
+  onOpenRegister: (prefill?: { email?: string; cpf?: string }) => void;
+  onShowPendingApproval: (app: AccountApplication) => void;
 }
 
 export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
@@ -16,28 +37,86 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
   onClose,
   onGoogleSignIn,
   onManualAccess,
-  onOpenRegister
+  onOpenRegister,
+  onShowPendingApproval
 }) => {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
-  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const handleGoogleClick = async () => {
+    if (!onGoogleSignIn) return;
     try {
       setErrorMessage(null);
       setIsGoogleLoading(true);
       await onGoogleSignIn();
-      setIsSuccess(true);
-      soundEffects.playPixSuccess();
-      setTimeout(() => {
-        setIsSuccess(false);
+
+      const currentUser = auth.currentUser;
+      const userEmail = currentUser?.email?.toLowerCase().trim() || '';
+
+      // 1. If admin, grant direct access
+      if (userEmail === ADMIN_EMAIL.toLowerCase()) {
+        setIsSuccess(true);
+        soundEffects.playPixSuccess();
+        setTimeout(() => {
+          setIsSuccess(false);
+          setIsGoogleLoading(false);
+          onClose();
+          onManualAccess();
+        }, 700);
+        return;
+      }
+
+      // 2. Search for registered application
+      const app = (currentUser?.uid ? getLocalUserApplication(currentUser.uid) : null) || 
+                  (userEmail ? findApplicationByEmailOrCpf(userEmail) : null);
+
+      if (app) {
         setIsGoogleLoading(false);
         onClose();
-      }, 700);
+        if (app.status === 'approved') {
+          soundEffects.playPixSuccess();
+          const profile = findUserProfileByEmailOrCpf(userEmail) || findUserProfileByEmailOrCpf(app.cpf);
+          onManualAccess(profile || undefined);
+        } else {
+          // Status is 'pending' or 'needs_revision': Show pending approval screen!
+          onShowPendingApproval(app);
+        }
+        return;
+      }
+
+      // 3. Search for existing user profile
+      const existingProfile = findUserProfileByEmailOrCpf(userEmail);
+      if (existingProfile && existingProfile.status === 'approved') {
+        setIsSuccess(true);
+        soundEffects.playPixSuccess();
+        setTimeout(() => {
+          setIsSuccess(false);
+          setIsGoogleLoading(false);
+          onClose();
+          onManualAccess(existingProfile);
+        }, 700);
+        return;
+      }
+
+      // 4. User does not have an account!
+      // "quando o usuario apertar em acessar conta se ele nao tiver conta no app mande ele pra abrir uma conta"
+      setIsGoogleLoading(false);
+      onClose();
+
+      // Pre-save Google details to draft
+      saveRegistrationDraft({
+        fullName: currentUser?.displayName || '',
+        preferredName: currentUser?.displayName?.split(' ')[0] || '',
+        email: userEmail,
+        selfiePhoto: currentUser?.photoURL || ''
+      });
+
+      onOpenRegister({ email: userEmail });
     } catch (err: unknown) {
       console.error('Google Sign-in error:', err);
       setIsGoogleLoading(false);
@@ -50,15 +129,71 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!identifier.trim()) return;
+    const cleanId = identifier.trim();
+    if (!cleanId) return;
 
-    setIsSuccess(true);
-    soundEffects.playPixSuccess();
-    setTimeout(() => {
-      onManualAccess(identifier.trim());
-      setIsSuccess(false);
-      onClose();
-    }, 700);
+    setErrorMessage(null);
+    const cleanLower = cleanId.toLowerCase();
+
+    // 1. Admin login check
+    if (cleanLower === ADMIN_EMAIL.toLowerCase()) {
+      setIsSuccess(true);
+      soundEffects.playPixSuccess();
+      setTimeout(() => {
+        setIsSuccess(false);
+        onClose();
+        onManualAccess();
+      }, 700);
+      return;
+    }
+
+    // 2. Search for registered application
+    const app = findApplicationByEmailOrCpf(cleanId);
+    if (app) {
+      if (app.status === 'approved') {
+        setIsSuccess(true);
+        soundEffects.playPixSuccess();
+        setTimeout(() => {
+          setIsSuccess(false);
+          onClose();
+          onManualAccess();
+        }, 700);
+      } else {
+        // Proposal is pending or needs revision -> Show "Aguarde a aprovação da sua conta"
+        onClose();
+        onShowPendingApproval(app);
+      }
+      return;
+    }
+
+    // 3. Search for existing user profile
+    const existingProfile = findUserProfileByEmailOrCpf(cleanId);
+    if (existingProfile && existingProfile.status === 'approved') {
+      setIsSuccess(true);
+      soundEffects.playPixSuccess();
+      setTimeout(() => {
+        setIsSuccess(false);
+        onClose();
+        onManualAccess(existingProfile);
+      }, 700);
+      return;
+    }
+
+    // 4. User does not have an account!
+    // As explicitly requested: redirect to open account!
+    const isEmail = cleanId.includes('@');
+    const isCpf = cleanId.replace(/\D/g, '').length >= 11;
+
+    saveRegistrationDraft({
+      email: isEmail ? cleanId : '',
+      cpf: isCpf ? cleanId : ''
+    });
+
+    onClose();
+    onOpenRegister({
+      email: isEmail ? cleanId : undefined,
+      cpf: isCpf ? cleanId : undefined
+    });
   };
 
   return (
@@ -72,7 +207,7 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
         >
           <button
             onClick={onClose}
-            className="absolute top-4 right-4 p-1.5 rounded-full text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+            className="absolute top-4 right-4 p-1.5 rounded-full text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -80,7 +215,7 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
           {!isSuccess ? (
             <div>
               {/* Header */}
-              <div className="flex items-center gap-2.5 mb-5">
+              <div className="flex items-center gap-2.5 mb-5 text-left">
                 <div className="w-10 h-10 rounded-2xl bg-[#a3e635]/20 border border-[#a3e635]/40 flex items-center justify-center text-[#a3e635] shrink-0">
                   <ShieldCheck className="w-5 h-5" />
                 </div>
@@ -89,14 +224,15 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
                     Acessar LeadsPay Bank
                   </h3>
                   <p className="text-xs text-slate-400">
-                    Acesse sua conta individual protegida
+                    Acesse sua conta individual ou verifique sua proposta
                   </p>
                 </div>
               </div>
 
               {errorMessage && (
-                <div className="mb-3.5 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs">
-                  {errorMessage}
+                <div className="mb-3.5 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{errorMessage}</span>
                 </div>
               )}
 
@@ -105,7 +241,7 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
                 type="button"
                 onClick={handleGoogleClick}
                 disabled={isGoogleLoading}
-                className="w-full py-3 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all shadow-md active:scale-[0.98] cursor-pointer"
+                className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all shadow-md active:scale-[0.98] cursor-pointer"
               >
                 {isGoogleLoading ? (
                   <Loader2 className="w-4 h-4 animate-spin text-slate-700" />
@@ -133,14 +269,14 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
               </button>
 
               {/* DIVIDER */}
-              <div className="flex items-center gap-3 my-4 text-[10px] text-slate-500 uppercase tracking-widest font-mono">
+              <div className="flex items-center gap-3 my-3 text-[10px] text-slate-500 uppercase tracking-widest font-mono">
                 <div className="flex-1 h-px bg-white/10" />
-                <span>ou acesse com dados</span>
+                <span>ou acesse com CPF/E-mail</span>
                 <div className="flex-1 h-px bg-white/10" />
               </div>
 
               {/* MANUAL LOGIN FORM */}
-              <form onSubmit={handleManualSubmit} className="space-y-3">
+              <form onSubmit={handleManualSubmit} className="space-y-3.5 text-left">
                 <div>
                   <label className="text-[11px] font-medium text-slate-300 block mb-1">
                     CPF ou E-mail cadastrado
@@ -150,7 +286,7 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
                     <input
                       type="text"
                       required
-                      placeholder="000.000.000-00 ou email@leadspay.com.br"
+                      placeholder="000.000.000-00 ou seu@email.com"
                       value={identifier}
                       onChange={(e) => setIdentifier(e.target.value)}
                       className="w-full pl-9 pr-3 py-2.5 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none"
@@ -160,13 +296,12 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
 
                 <div>
                   <label className="text-[11px] font-medium text-slate-300 block mb-1">
-                    Senha de 6 dígitos
+                    Senha de acesso
                   </label>
                   <div className="relative">
                     <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
                       type="password"
-                      maxLength={6}
                       placeholder="••••••"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -175,30 +310,13 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
                   </div>
                 </div>
 
-                <div className="pt-2 flex items-center gap-2">
+                <div className="pt-2">
                   <button
                     type="submit"
-                    className="flex-1 py-2.5 rounded-xl bg-[#a3e635] hover:bg-[#92d628] text-black font-bold text-xs flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(163,230,53,0.3)] transition-all cursor-pointer"
+                    className="w-full py-3 rounded-xl bg-[#a3e635] hover:bg-[#92d628] text-black font-bold text-xs flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(163,230,53,0.3)] transition-all cursor-pointer"
                   >
-                    <span>Entrar na Conta</span>
+                    <span>Acessar Minha Conta</span>
                     <ArrowRight className="w-4 h-4" />
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsSuccess(true);
-                      soundEffects.playPixSuccess();
-                      setTimeout(() => {
-                        onManualAccess('Biometria');
-                        setIsSuccess(false);
-                        onClose();
-                      }, 700);
-                    }}
-                    className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-[#a3e635] transition-all cursor-pointer"
-                    title="Acessar com Biometria"
-                  >
-                    <Fingerprint className="w-5 h-5" />
                   </button>
                 </div>
               </form>
@@ -214,7 +332,7 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
                     }}
                     className="text-[#a3e635] font-semibold hover:underline cursor-pointer ml-1"
                   >
-                    Abrir uma conta
+                    Criar conta
                   </button>
                 </p>
               </div>

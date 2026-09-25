@@ -18,6 +18,7 @@ import { TokenModal } from './components/TokenModal';
 import { OpenAccountModal } from './components/OpenAccountModal';
 import { AccessAccountModal } from './components/AccessAccountModal';
 import { AdminReviewModal } from './components/AdminReviewModal';
+import { PendingApprovalModal } from './components/PendingApprovalModal';
 import { NotificationToast, BankNotification } from './components/NotificationToast';
 import { 
   initialUserProfile, 
@@ -27,7 +28,7 @@ import {
   initialApiKeys, 
   initialWebhooks 
 } from './data/mockData';
-import { Transaction, VirtualCard, DeveloperApiKey, WebhookConfig, UserProfile } from './types';
+import { Transaction, VirtualCard, DeveloperApiKey, WebhookConfig, UserProfile, AccountApplication } from './types';
 import { soundEffects } from './utils/audio';
 import {
   auth,
@@ -48,7 +49,11 @@ import {
   createDefaultVirtualCard,
   getLocalUserProfile,
   saveLocalUserProfile,
-  saveLocalCards
+  saveLocalCards,
+  ADMIN_EMAIL,
+  findApplicationByEmailOrCpf,
+  getLocalUserApplication,
+  saveRegistrationDraft
 } from './services/firebaseBankService';
 
 export default function App() {
@@ -75,6 +80,9 @@ export default function App() {
   const [isOpenAccountModalOpen, setIsOpenAccountModalOpen] = useState(false);
   const [isAccessAccountModalOpen, setIsAccessAccountModalOpen] = useState(false);
   const [isAdminReviewModalOpen, setIsAdminReviewModalOpen] = useState(false);
+  const [isPendingApprovalModalOpen, setIsPendingApprovalModalOpen] = useState(false);
+  const [pendingApp, setPendingApp] = useState<AccountApplication | null>(null);
+  const [openAccountPrefill, setOpenAccountPrefill] = useState<{ email?: string; cpf?: string } | undefined>(undefined);
   const [notification, setNotification] = useState<BankNotification | null>(null);
 
   // Biometric gate modal
@@ -95,67 +103,81 @@ export default function App() {
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
-        // 1. Immediately provide individual user profile (from local cache or fresh creation)
-        let profile = getLocalUserProfile(currentUser.uid);
-        if (profile) {
-          profile.balance = Math.max(0, profile.balance || 0);
+        const userEmail = currentUser.email?.toLowerCase().trim() || '';
+        const isAdmin = userEmail === ADMIN_EMAIL.toLowerCase();
+
+        // 1. Super Admin (rickmarketing81@gmail.com) has instant access to administration and dashboard
+        if (isAdmin) {
+          let profile = getLocalUserProfile(currentUser.uid);
+          if (profile) {
+            profile.balance = Math.max(0, profile.balance || 0);
+          }
+          if (!profile) {
+            profile = createInitialUserProfile({
+              uid: currentUser.uid,
+              displayName: currentUser.displayName || 'Administrador LeadsPay',
+              email: currentUser.email || ADMIN_EMAIL,
+              photoURL: currentUser.photoURL
+            });
+            saveLocalUserProfile(currentUser.uid, profile);
+          }
+          setUserProfile(profile);
+          setCurrentScreen('bank');
+          return;
         }
-        if (!profile) {
-          profile = createInitialUserProfile({
+
+        // 2. Regular user verification: "nunca crie uma conta sem validacao da administracao"
+        const existingApp = getLocalUserApplication(currentUser.uid) || 
+                            (userEmail ? findApplicationByEmailOrCpf(userEmail) : null);
+        const existingProfile = getLocalUserProfile(currentUser.uid);
+
+        // A. Is approved by administrator
+        if (existingApp?.status === 'approved' || existingProfile?.status === 'approved') {
+          let profile = existingProfile || createInitialUserProfile({
             uid: currentUser.uid,
-            displayName: currentUser.displayName,
-            email: currentUser.email,
-            photoURL: currentUser.photoURL
+            displayName: existingApp?.fullName || currentUser.displayName || 'Cliente LeadsPay',
+            email: currentUser.email || existingApp?.email || '',
+            photoURL: existingApp?.selfiePhoto || currentUser.photoURL
           });
-          saveLocalUserProfile(currentUser.uid, profile);
-          const initialCard = createDefaultVirtualCard(currentUser.uid, profile.name);
-          saveLocalCards(currentUser.uid, [initialCard]);
-        }
-        setUserProfile(profile);
+          profile.balance = Math.max(0, profile.balance || 0);
+          profile.status = 'approved';
+          setUserProfile(profile);
 
-        // 2. Subscribe to real-time updates (loads local cache first, then syncs with cloud)
-        if (unsubscribeFirestore) unsubscribeFirestore();
-        unsubscribeFirestore = subscribeToUserAccount(currentUser.uid, {
-          onProfile: (updatedProfile) => {
-            setUserProfile(prev => ({
-              ...prev,
-              ...updatedProfile,
-              balance: Math.max(0, updatedProfile.balance || 0),
-              uid: currentUser.uid
-            }));
-          },
-          onTransactions: (updatedTxs) => {
-            setTransactions(updatedTxs);
-          },
-          onCards: (updatedCards) => {
-            if (updatedCards.length > 0) {
-              setCards(updatedCards);
+          if (unsubscribeFirestore) unsubscribeFirestore();
+          unsubscribeFirestore = subscribeToUserAccount(currentUser.uid, {
+            onProfile: (updatedProfile) => {
+              setUserProfile(prev => ({
+                ...prev,
+                ...updatedProfile,
+                balance: Math.max(0, updatedProfile.balance || 0),
+                uid: currentUser.uid
+              }));
+            },
+            onTransactions: (updatedTxs) => setTransactions(updatedTxs),
+            onCards: (updatedCards) => {
+              if (updatedCards.length > 0) setCards(updatedCards);
             }
-          }
-        });
+          });
 
-        // 3. Try to ensure Firestore cloud document exists in background
-        try {
-          const userDocRef = doc(db, 'users', currentUser.uid);
-          const docSnap = await getDoc(userDocRef);
-
-          if (!docSnap.exists()) {
-            await setDoc(userDocRef, profile);
-            const initialCard = createDefaultVirtualCard(currentUser.uid, profile.name);
-            await setDoc(doc(db, 'users', currentUser.uid, 'cards', initialCard.id), initialCard);
-          } else {
-            const data = docSnap.data() as UserProfile;
-            data.uid = currentUser.uid;
-            saveLocalUserProfile(currentUser.uid, data);
-            setUserProfile(data);
-          }
-        } catch (err) {
-          console.warn('Firestore cloud sync notice (operating in local individual mode):', err);
+          setCurrentScreen('bank');
+        } else if (existingApp) {
+          // B. Proposal exists and is pending or needs revision: Keep on entry screen and show pending notice!
+          setCurrentScreen('onboarding');
+          setPendingApp(existingApp);
+          setIsPendingApprovalModalOpen(true);
+        } else {
+          // C. User has NO account: send to open account flow with draft pre-filled!
+          setCurrentScreen('onboarding');
+          saveRegistrationDraft({
+            fullName: currentUser.displayName || '',
+            preferredName: currentUser.displayName?.split(' ')[0] || '',
+            email: userEmail,
+            selfiePhoto: currentUser.photoURL || ''
+          });
+          setOpenAccountPrefill({ email: userEmail });
+          setIsOpenAccountModalOpen(true);
         }
-
-        setCurrentScreen('bank');
       } else {
-        // Clean up Firestore listener on logout
         if (unsubscribeFirestore) {
           unsubscribeFirestore();
           unsubscribeFirestore = null;
@@ -189,17 +211,63 @@ export default function App() {
   // Google Sign-in Handler
   const handleGoogleSignIn = async () => {
     try {
-      const { user, profile } = await signInWithGoogle();
-      setUserProfile(profile);
-      setCurrentScreen('bank');
-      setActiveTab('dashboard');
-      soundEffects.playPixSuccess();
-      setNotification({
-        id: Date.now().toString(),
-        title: 'Conta Conectada!',
-        message: `Bem-vindo, ${user.displayName || user.email}! Seus dados estão seguros no Firebase.`,
-        type: 'pix'
-      });
+      const { user } = await signInWithGoogle();
+      const userEmail = user.email?.toLowerCase().trim() || '';
+      const isAdmin = userEmail === ADMIN_EMAIL.toLowerCase();
+
+      if (isAdmin) {
+        let adminProf = getLocalUserProfile(user.uid);
+        if (!adminProf) {
+          adminProf = createInitialUserProfile({
+            uid: user.uid,
+            displayName: user.displayName || 'Administrador LeadsPay',
+            email: user.email || ADMIN_EMAIL,
+            photoURL: user.photoURL
+          });
+          saveLocalUserProfile(user.uid, adminProf);
+        }
+        setUserProfile(adminProf);
+        setCurrentScreen('bank');
+        setActiveTab('dashboard');
+        soundEffects.playPixSuccess();
+        return;
+      }
+
+      // Check application status
+      const app = (user.uid ? getLocalUserApplication(user.uid) : null) || 
+                  (userEmail ? findApplicationByEmailOrCpf(userEmail) : null);
+
+      if (app) {
+        if (app.status === 'approved') {
+          const profile = getLocalUserProfile(user.uid) || getLocalUserProfile(app.userId);
+          if (profile) {
+            setUserProfile(profile);
+            setCurrentScreen('bank');
+            setActiveTab('dashboard');
+            soundEffects.playPixSuccess();
+          }
+        } else {
+          // Status is pending or needs revision
+          setPendingApp(app);
+          setIsPendingApprovalModalOpen(true);
+        }
+      } else {
+        // Never create account without admin validation!
+        saveRegistrationDraft({
+          fullName: user.displayName || '',
+          preferredName: user.displayName?.split(' ')[0] || '',
+          email: userEmail,
+          selfiePhoto: user.photoURL || ''
+        });
+        setOpenAccountPrefill({ email: userEmail });
+        setIsOpenAccountModalOpen(true);
+        setNotification({
+          id: Date.now().toString(),
+          title: 'Cadastro Necessário',
+          message: 'Conectado com o Google! Agora preencha seus dados e fotos para validação da sua conta.',
+          type: 'card'
+        });
+      }
     } catch (err: unknown) {
       const authError = err as { code?: string; message?: string };
       if (authError?.code !== 'auth/popup-closed-by-user') {
@@ -393,12 +461,20 @@ export default function App() {
   };
 
   // Handle manual or biometric access from access modal
-  const handleManualAccess = (identifier: string) => {
+  const handleManualAccess = (profileOrIdentifier?: UserProfile | string) => {
+    if (typeof profileOrIdentifier === 'object' && profileOrIdentifier !== null) {
+      setUserProfile(profileOrIdentifier);
+      setCurrentScreen('bank');
+      setActiveTab('dashboard');
+      soundEffects.playPixSuccess();
+      return;
+    }
+
     requestBiometric('Acessar LeadsPay Bank', () => {
-      if (identifier && identifier !== 'Biometria') {
+      if (typeof profileOrIdentifier === 'string' && profileOrIdentifier !== 'Biometria') {
         setUserProfile(prev => ({
           ...prev,
-          name: identifier.includes('@') ? identifier.split('@')[0] : prev.name
+          name: profileOrIdentifier.includes('@') ? profileOrIdentifier.split('@')[0] : prev.name
         }));
       }
       setCurrentScreen('bank');
@@ -464,6 +540,7 @@ export default function App() {
             <LoginEntryView
               onAccessAccount={handleAccessFromOnboarding}
               onOpenRegister={() => setIsOpenAccountModalOpen(true)}
+              onGoogleSignIn={handleGoogleSignIn}
               onOpenQuickPix={() => {
                 setCurrentScreen('bank');
                 setIsPixModalOpen(true);
@@ -707,21 +784,60 @@ export default function App() {
         onClose={() => setIsAccessAccountModalOpen(false)}
         onGoogleSignIn={handleGoogleSignIn}
         onManualAccess={handleManualAccess}
-        onOpenRegister={() => {
+        onOpenRegister={(prefill) => {
+          setOpenAccountPrefill(prefill);
           setIsAccessAccountModalOpen(false);
           setIsOpenAccountModalOpen(true);
+        }}
+        onShowPendingApproval={(app) => {
+          setPendingApp(app);
+          setIsAccessAccountModalOpen(false);
+          setIsPendingApprovalModalOpen(true);
         }}
       />
 
       {/* 8. Open Account Modal with Google Sign-in & Registration */}
       <OpenAccountModal
         isOpen={isOpenAccountModalOpen}
-        onClose={() => setIsOpenAccountModalOpen(false)}
+        onClose={() => {
+          setIsOpenAccountModalOpen(false);
+          setOpenAccountPrefill(undefined);
+        }}
+        initialIdentifier={openAccountPrefill}
         onAccountCreated={handleAccountCreated}
         onGoogleSignIn={handleGoogleSignIn}
         onOpenLogin={() => {
           setIsOpenAccountModalOpen(false);
           setIsAccessAccountModalOpen(true);
+        }}
+        onApplicationSubmitted={(app) => {
+          setPendingApp(app);
+        }}
+      />
+
+      {/* 8b. Pending Approval Screen (Aguarde a aprovação da sua conta) */}
+      <PendingApprovalModal
+        isOpen={isPendingApprovalModalOpen}
+        onClose={() => setIsPendingApprovalModalOpen(false)}
+        application={pendingApp}
+        onOpenRevision={(app) => {
+          setIsPendingApprovalModalOpen(false);
+          setIsOpenAccountModalOpen(true);
+        }}
+        onApprovedLogin={(app) => {
+          setIsPendingApprovalModalOpen(false);
+          const profile = getLocalUserProfile(app.userId) || {
+            ...userProfile,
+            name: app.fullName,
+            preferredName: app.preferredName,
+            document: app.cpf,
+            email: app.email,
+            status: 'approved'
+          };
+          setUserProfile(profile);
+          setCurrentScreen('bank');
+          setActiveTab('dashboard');
+          soundEffects.playPixSuccess();
         }}
       />
 

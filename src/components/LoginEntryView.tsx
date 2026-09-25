@@ -17,6 +17,7 @@ interface LoginEntryViewProps {
   onOpenQuickPix: () => void;
   onOpenSupport: () => void;
   onOpenToken: () => void;
+  onGoogleSignIn?: () => Promise<void>;
 }
 
 export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
@@ -219,9 +220,9 @@ export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
             </button>
           </div>
 
-          {/* Action Buttons: Green Primary & Outlined Secondary */}
+          {/* Action Buttons: Green Acessar Conta and Criar Conta */}
           <div className="space-y-2.5">
-            {/* Green button: Acessar conta */}
+            {/* 1. Green button: Acessar conta */}
             <button
               onClick={onAccessAccount}
               className="w-full py-3.5 px-4 rounded-full bg-[#a3e635] hover:bg-[#84cc16] active:scale-[0.99] text-black font-bold text-sm transition-all duration-200 shadow-[0_4px_20px_rgba(163,230,53,0.35)] cursor-pointer text-center"
@@ -229,12 +230,12 @@ export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
               Acessar conta
             </button>
 
-            {/* Black button with subtle green border: Abrir uma conta */}
+            {/* 2. Black button with subtle green border: Criar conta */}
             <button
               onClick={onOpenRegister}
               className="w-full py-3.5 px-4 rounded-full bg-black/40 hover:bg-black/70 active:scale-[0.99] border border-[#a3e635]/80 hover:border-[#a3e635] text-[#a3e635] hover:text-[#bef264] font-bold text-sm transition-all duration-200 cursor-pointer text-center"
             >
-              Abrir uma conta
+              Criar conta
             </button>
           </div>
 
