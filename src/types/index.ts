@@ -1,122 +1,103 @@
-export type TransactionType = 'pix_in' | 'pix_out' | 'tap_to_pay' | 'card_payment' | 'bill_payment' | 'investment';
+import type { Timestamp } from 'firebase/firestore';
 
-export interface Transaction {
-  id: string;
-  type: TransactionType;
-  title: string;
-  description: string;
-  amount: number;
-  timestamp: string; // ISO format or display
-  dateFormatted: string;
-  category: 'Vendas' | 'Alimentação' | 'Serviços' | 'Transporte' | 'Lojas' | 'Transferência' | 'Outros';
-  status: 'completed' | 'pending' | 'failed';
-  recipientOrSender?: string;
-  documentId?: string;
-  e2eId?: string;
-  authMethod?: 'Biometria (Face ID)' | 'LeadsTap NFC' | 'Token Instantâneo' | 'Chave Pix';
-}
+/**
+ * LeadsTap — modelo de dados real.
+ *
+ * Regras que este modelo impõe:
+ * - Dinheiro é medido em CENTAVOS (inteiros). Nunca floats de reais.
+ * - Saldo = soma das entradas do ledger do usuário. Nenhum saldo é
+ *   inventado, estimado ou guardado em paralelo.
+ * - Não existe cartão, banco, agência, rendimento ou limite neste modelo:
+ *   esses produtos não existem na LeadsTap e não são representados.
+ */
 
-export interface VirtualCard {
-  id: string;
-  name: string;
-  type: 'virtual' | 'physical';
-  cardNumber: string;
-  cardHolder: string;
-  expiry: string;
-  cvv: string;
-  cvvExpiresInSeconds: number;
-  isFrozen: boolean;
-  limit: number;
-  usedLimit: number;
-  brand: 'mastercard' | 'visa';
-  color: string;
-  category: 'Uso Diário' | 'Assinaturas' | 'Compras Online' | 'Corporativo';
-}
-
-export interface FinancialCategory {
-  name: string;
-  amount: number;
-  percentage: number;
-  color: string;
-  iconName: string;
-  budget: number;
-}
-
-export interface DeveloperApiKey {
-  id: string;
-  name: string;
-  keyPrefix: string;
-  fullKey?: string;
-  environment: 'production' | 'sandbox';
-  createdAt: string;
-  lastUsed: string;
-}
-
-export interface WebhookConfig {
-  id: string;
-  url: string;
-  secret: string;
-  events: string[];
-  isActive: boolean;
-  lastDeliveryStatus?: '200_ok' | 'failed' | 'pending';
-  lastDeliveryTime?: string;
-}
-
-export interface UserProfile {
-  uid?: string;
-  email?: string;
-  photoURL?: string;
-  name: string;
-  document: string; // CPF or CNPJ
-  accountNumber: string;
-  agency: string;
-  bankCode: string;
-  balance: number;
-  investedBalance: number;
-  pixKeys: {
-    type: 'cpf' | 'email' | 'phone' | 'random';
-    value: string;
-  }[];
-  biometricEnabled: boolean;
-  streetProtectionMode: boolean; // Modo Rua
-  dailyPixLimit: number;
-  nightlyPixLimit: number;
-  status?: 'pending' | 'approved' | 'needs_revision' | 'rejected';
-  preferredName?: string;
-  birthDate?: string;
-  address?: UserAddress;
-}
-
-export interface UserAddress {
-  cep: string;
-  street: string;
-  number: string;
-  complement?: string;
-  neighborhood: string;
-  city: string;
-  state: string;
-}
-
-export type ApplicationStatus = 'pending' | 'approved' | 'needs_revision' | 'rejected';
-
-export interface AccountApplication {
-  id: string;
-  userId: string;
-  fullName: string;
-  preferredName: string;
-  birthDate: string;
-  cpf: string;
+export interface LeadsTapProfile {
+  uid: string;
+  displayName: string;
   email: string;
-  phone: string;
-  address: UserAddress;
-  docFrontPhoto: string;
-  docBackPhoto: string;
-  selfiePhoto: string;
-  status: ApplicationStatus;
-  createdAt: string;
-  updatedAt: string;
-  reviewedAt?: string;
-  reviewedBy?: string;
-  revisionNotes?: string;
-  requestedRevisions?: string[];
+  photoURL?: string;
+  /** Chaves Pix registradas pelo próprio usuário (identificadores dentro da LeadsTap). */
+  pixKeys: string[];
+  /** Verdadeiro somente após liquidação concluída da migração (backend). */
+  migratedFromLeadsPay: boolean;
+  createdAt: Timestamp | null;
+}
+
+export type LedgerEntryType =
+  | 'pix_in'
+  | 'pix_out'
+  | 'tap_payment'
+  | 'tap_receipt'
+  /**
+   * Reservado para quando o trilho externo de saque existir. Hoje nenhum
+   * registro desse tipo pode ser criado (saque externo está pendente de
+   * trilho e nunca aparece como concluído).
+   */
+  | 'withdrawal';
+
+/**
+ * Uma ponta de um movimento real de dinheiro, na perspectiva do dono.
+ * Movimentos de duas pontas (Pix P2P, cobrança Tap) geram DUAS entradas com
+ * o mesmo groupId, escritas na mesma transação do Firestore.
+ */
+export interface LedgerEntry {
+  id: string;
+  /** Identificador compartilhado pelas duas pontas do mesmo movimento. */
+  groupId: string;
+  ownerUid: string;
+  counterpartyUid: string;
+  counterpartyName: string;
+  type: LedgerEntryType;
+  /** Sinal: positivo = entrou, negativo = saiu. Em centavos. */
+  amountCents: number;
+  /** Para tap_receipt: valor bruto cobrado. */
+  grossCents?: number;
+  /** Para tap_receipt: taxa única descontada (R$ 0,99). */
+  feeCents?: number;
+  description: string;
+  relatedChargeId?: string;
+  createdAt: Timestamp | null;
+  status: 'completed';
+}
+
+/**
+ * Cobrança LeadsTap em circuito fechado: o vendedor cria, outro usuário
+ * LeadsTap paga com saldo real. Nunca envolve cartão ou adquirência.
+ */
+export interface TapCharge {
+  id: string;
+  /** Código curto que o pagador digita para encontrar a cobrança. */
+  code: string;
+  sellerUid: string;
+  sellerName: string;
+  amountGrossCents: number;
+  feeCents: number;
+  netCents: number;
+  description: string;
+  status: 'open' | 'paid' | 'cancelled';
+  payerUid?: string;
+  payerName?: string;
+  createdAt: Timestamp | null;
+  paidAt?: Timestamp | null;
+}
+
+/** Índice chave Pix -> usuário, para resolver o destinatário de um Pix interno. */
+export interface PixKeyRecord {
+  key: string;
+  uid: string;
+  ownerName: string;
+  createdAt: Timestamp | null;
+}
+
+/**
+ * Solicitação de migração LeadsPay -> LeadsTap.
+ * Criar este registro NÃO move dinheiro: a liquidação entre sistemas
+ * depende de integração de backend e fica pendente até lá.
+ */
+export interface MigrationRequest {
+  id: string;
+  uid: string;
+  status: 'awaiting_confirmation';
+  requestedAt: Timestamp | null;
+  note: string;
 }

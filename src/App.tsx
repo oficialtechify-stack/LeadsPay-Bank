@@ -1,864 +1,203 @@
-import React, { useState, useEffect } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import { useEffect, useState } from 'react';
+import { auth, onAuthStateChanged } from './firebase/config';
+import type { User } from './firebase/config';
+import {
+  ensureProfile,
+  logOut,
+  requestLeadsPayMigration,
+  signInWithGoogle,
+  subscribeLedger,
+  subscribeMigration,
+  subscribeProfile,
+  sumBalanceCents,
+} from './lib/leadstap';
+import type {
+  LeadsTapProfile,
+  LedgerEntry,
+  MigrationRequest,
+} from './types';
+import { BrandLogo } from './components/BrandLogo';
 import { LoginEntryView } from './components/LoginEntryView';
 import { HeaderBar } from './components/HeaderBar';
-import { BottomNavBar, MainTab } from './components/BottomNavBar';
+import { BottomNavBar } from './components/BottomNavBar';
+import type { MainTab } from './components/BottomNavBar';
 import { DashboardView } from './components/DashboardView';
 import { ExtratoView } from './components/ExtratoView';
-import { CardsView } from './components/CardsView';
+import { TapView } from './components/TapView';
+import { PixView } from './components/PixView';
 import { AjustesView } from './components/AjustesView';
-import { FinancialManagementView } from './components/FinancialManagementView';
-import { DeveloperApiView } from './components/DeveloperApiView';
-import { PixModal } from './components/PixModal';
-import { LeadsTapModal } from './components/LeadsTapModal';
-import { Support247Chat } from './components/Support247Chat';
-import { SecurityCenterModal } from './components/SecurityCenterModal';
-import { BiometricAuthModal } from './components/BiometricAuthModal';
-import { TokenModal } from './components/TokenModal';
-import { OpenAccountModal } from './components/OpenAccountModal';
-import { AccessAccountModal } from './components/AccessAccountModal';
-import { AdminReviewModal } from './components/AdminReviewModal';
-import { PendingApprovalModal } from './components/PendingApprovalModal';
-import { NotificationToast, BankNotification } from './components/NotificationToast';
-import { 
-  initialUserProfile, 
-  initialTransactions, 
-  initialVirtualCards, 
-  initialFinancialCategories, 
-  initialApiKeys, 
-  initialWebhooks 
-} from './data/mockData';
-import { Transaction, VirtualCard, DeveloperApiKey, WebhookConfig, UserProfile, AccountApplication } from './types';
-import { soundEffects } from './utils/audio';
-import {
-  auth,
-  onAuthStateChanged,
-  doc,
-  getDoc,
-  setDoc,
-  db
-} from './firebase/config';
-import {
-  signInWithGoogle,
-  logOut,
-  subscribeToUserAccount,
-  recordTransaction,
-  saveCard,
-  updateUserProfile as updateUserProfileInDb,
-  createInitialUserProfile,
-  createDefaultVirtualCard,
-  getLocalUserProfile,
-  saveLocalUserProfile,
-  saveLocalCards,
-  ADMIN_EMAIL,
-  findApplicationByEmailOrCpf,
-  getLocalUserApplication,
-  saveRegistrationDraft
-} from './services/firebaseBankService';
+import { NotificationToast } from './components/NotificationToast';
+import type { Toast } from './components/NotificationToast';
 
 export default function App() {
-  // Screen and Tab state: starts at the exact entry screen requested
-  const [currentScreen, setCurrentScreen] = useState<'onboarding' | 'bank'>('onboarding');
-  const [activeTab, setActiveTab] = useState<MainTab>('dashboard');
-  const [isMobileFrame, setIsMobileFrame] = useState(false);
-  const [showBalance, setShowBalance] = useState(true);
+  const [authUser, setAuthUser] = useState<User | null | undefined>(undefined);
+  const [profile, setProfile] = useState<LeadsTapProfile | null>(null);
+  const [entries, setEntries] = useState<LedgerEntry[]>([]);
+  const [migration, setMigration] = useState<MigrationRequest | null>(null);
+  const [activeTab, setActiveTab] = useState<MainTab>('inicio');
+  const [toast, setToast] = useState<Toast | null>(null);
+  const [fatalError, setFatalError] = useState<string | null>(null);
+  const [migrationBusy, setMigrationBusy] = useState(false);
 
-  // Core bank data state
-  const [userProfile, setUserProfile] = useState<UserProfile>(initialUserProfile);
-  const [transactions, setTransactions] = useState<Transaction[]>(initialTransactions);
-  const [cards, setCards] = useState<VirtualCard[]>(initialVirtualCards);
-  const [categories, setCategories] = useState(initialFinancialCategories);
-  const [apiKeys, setApiKeys] = useState<DeveloperApiKey[]>(initialApiKeys);
-  const [webhooks, setWebhooks] = useState<WebhookConfig[]>(initialWebhooks);
+  const showToast = (message: string, kind: 'success' | 'error') => {
+    setToast({ message, kind });
+    window.setTimeout(() => setToast(null), 4500);
+  };
 
-  // Modals state
-  const [isPixModalOpen, setIsPixModalOpen] = useState(false);
-  const [isTapToPayOpen, setIsTapToPayOpen] = useState(false);
-  const [isSupportOpen, setIsSupportOpen] = useState(false);
-  const [isSecurityOpen, setIsSecurityOpen] = useState(false);
-  const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
-  const [isOpenAccountModalOpen, setIsOpenAccountModalOpen] = useState(false);
-  const [isAccessAccountModalOpen, setIsAccessAccountModalOpen] = useState(false);
-  const [isAdminReviewModalOpen, setIsAdminReviewModalOpen] = useState(false);
-  const [isPendingApprovalModalOpen, setIsPendingApprovalModalOpen] = useState(false);
-  const [pendingApp, setPendingApp] = useState<AccountApplication | null>(null);
-  const [openAccountPrefill, setOpenAccountPrefill] = useState<{ email?: string; cpf?: string } | undefined>(undefined);
-  const [notification, setNotification] = useState<BankNotification | null>(null);
-
-  // Biometric gate modal
-  const [biometricConfig, setBiometricConfig] = useState<{
-    isOpen: boolean;
-    title: string;
-    reason?: string;
-    onVerified: () => void;
-  }>({
-    isOpen: false,
-    title: 'Autenticação Biométrica',
-    onVerified: () => {}
-  });
-
-  // Real-time Firebase Authentication & per-user individual Firestore synchronization
   useEffect(() => {
-    let unsubscribeFirestore: (() => void) | null = null;
-
-    const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
-      if (currentUser) {
-        const userEmail = currentUser.email?.toLowerCase().trim() || '';
-        const isAdmin = userEmail === ADMIN_EMAIL.toLowerCase();
-
-        // 1. Super Admin (rickmarketing81@gmail.com) has instant access to administration and dashboard
-        if (isAdmin) {
-          let profile = getLocalUserProfile(currentUser.uid);
-          if (profile) {
-            profile.balance = Math.max(0, profile.balance || 0);
-          }
-          if (!profile) {
-            profile = createInitialUserProfile({
-              uid: currentUser.uid,
-              displayName: currentUser.displayName || 'Administrador LeadsPay',
-              email: currentUser.email || ADMIN_EMAIL,
-              photoURL: currentUser.photoURL
-            });
-            saveLocalUserProfile(currentUser.uid, profile);
-          }
-          setUserProfile(profile);
-          setCurrentScreen('bank');
-          return;
-        }
-
-        // 2. Regular user verification: "nunca crie uma conta sem validacao da administracao"
-        const existingApp = getLocalUserApplication(currentUser.uid) || 
-                            (userEmail ? findApplicationByEmailOrCpf(userEmail) : null);
-        const existingProfile = getLocalUserProfile(currentUser.uid);
-
-        // A. Is approved by administrator
-        if (existingApp?.status === 'approved' || existingProfile?.status === 'approved') {
-          let profile = existingProfile || createInitialUserProfile({
-            uid: currentUser.uid,
-            displayName: existingApp?.fullName || currentUser.displayName || 'Cliente LeadsPay',
-            email: currentUser.email || existingApp?.email || '',
-            photoURL: existingApp?.selfiePhoto || currentUser.photoURL
-          });
-          profile.balance = Math.max(0, profile.balance || 0);
-          profile.status = 'approved';
-          setUserProfile(profile);
-
-          if (unsubscribeFirestore) unsubscribeFirestore();
-          unsubscribeFirestore = subscribeToUserAccount(currentUser.uid, {
-            onProfile: (updatedProfile) => {
-              setUserProfile(prev => ({
-                ...prev,
-                ...updatedProfile,
-                balance: Math.max(0, updatedProfile.balance || 0),
-                uid: currentUser.uid
-              }));
-            },
-            onTransactions: (updatedTxs) => setTransactions(updatedTxs),
-            onCards: (updatedCards) => {
-              if (updatedCards.length > 0) setCards(updatedCards);
-            }
-          });
-
-          setCurrentScreen('bank');
-        } else if (existingApp) {
-          // B. Proposal exists and is pending or needs revision: Keep on entry screen and show pending notice!
-          setCurrentScreen('onboarding');
-          setPendingApp(existingApp);
-          setIsPendingApprovalModalOpen(true);
-        } else {
-          // C. User has NO account: send to open account flow with draft pre-filled!
-          setCurrentScreen('onboarding');
-          saveRegistrationDraft({
-            fullName: currentUser.displayName || '',
-            preferredName: currentUser.displayName?.split(' ')[0] || '',
-            email: userEmail,
-            selfiePhoto: currentUser.photoURL || ''
-          });
-          setOpenAccountPrefill({ email: userEmail });
-          setIsOpenAccountModalOpen(true);
-        }
-      } else {
-        if (unsubscribeFirestore) {
-          unsubscribeFirestore();
-          unsubscribeFirestore = null;
-        }
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      setAuthUser(user);
+      setProfile(null);
+      setEntries([]);
+      setMigration(null);
+      setFatalError(null);
+      if (!user) return;
+      try {
+        await ensureProfile({
+          uid: user.uid,
+          displayName: user.displayName || '',
+          email: user.email || '',
+          photoURL: user.photoURL,
+        });
+      } catch (err) {
+        setFatalError(
+          err instanceof Error ? err.message : 'Não foi possível carregar sua conta.',
+        );
       }
     });
-
-    return () => {
-      unsubscribeAuth();
-      if (unsubscribeFirestore) unsubscribeFirestore();
-    };
+    return unsub;
   }, []);
 
-  // Helper to trigger biometric check
-  const requestBiometric = (actionName: string, onVerified: () => void) => {
-    if (!userProfile.biometricEnabled) {
-      onVerified();
-      return;
-    }
-    setBiometricConfig({
-      isOpen: true,
-      title: actionName,
-      reason: 'Por favor, autentique com Face ID ou Touch ID para confirmar esta operação.',
-      onVerified: () => {
-        setBiometricConfig(prev => ({ ...prev, isOpen: false }));
-        onVerified();
-      }
-    });
-  };
+  useEffect(() => {
+    if (!authUser) return;
+    const unsubs = [
+      subscribeProfile(authUser.uid, setProfile),
+      subscribeLedger(authUser.uid, setEntries),
+      subscribeMigration(authUser.uid, setMigration),
+    ];
+    return () => unsubs.forEach((u) => u());
+  }, [authUser]);
 
-  // Google Sign-in Handler
-  const handleGoogleSignIn = async () => {
-    try {
-      const { user } = await signInWithGoogle();
-      const userEmail = user.email?.toLowerCase().trim() || '';
-      const isAdmin = userEmail === ADMIN_EMAIL.toLowerCase();
+  if (authUser === undefined) {
+    return (
+      <div className="min-h-screen bg-[#050607] text-slate-100 flex items-center justify-center">
+        <p className="text-slate-400">Carregando…</p>
+      </div>
+    );
+  }
 
-      if (isAdmin) {
-        let adminProf = getLocalUserProfile(user.uid);
-        if (!adminProf) {
-          adminProf = createInitialUserProfile({
-            uid: user.uid,
-            displayName: user.displayName || 'Administrador LeadsPay',
-            email: user.email || ADMIN_EMAIL,
-            photoURL: user.photoURL
-          });
-          saveLocalUserProfile(user.uid, adminProf);
-        }
-        setUserProfile(adminProf);
-        setCurrentScreen('bank');
-        setActiveTab('dashboard');
-        soundEffects.playPixSuccess();
-        return;
-      }
+  if (!authUser) {
+    return (
+      <div className="min-h-screen bg-[#050607] text-slate-100">
+        <LoginEntryView
+          onLogin={async () => {
+            try {
+              await signInWithGoogle();
+            } catch (err) {
+              showToast(
+                err instanceof Error ? err.message : 'Falha no login.',
+                'error',
+              );
+            }
+          }}
+        />
+        <NotificationToast toast={toast} />
+      </div>
+    );
+  }
 
-      // Check application status
-      const app = (user.uid ? getLocalUserApplication(user.uid) : null) || 
-                  (userEmail ? findApplicationByEmailOrCpf(userEmail) : null);
+  if (fatalError) {
+    return (
+      <div className="min-h-screen bg-[#050607] text-slate-100 flex items-center justify-center p-6">
+        <div className="max-w-md w-full rounded-3xl border border-red-500/30 bg-red-500/10 p-6">
+          <h1 className="font-display text-xl mb-2">Não foi possível abrir sua conta</h1>
+          <p className="text-sm text-slate-300 break-words">{fatalError}</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-4 w-full rounded-full bg-[#00e676] text-black font-semibold py-3"
+          >
+            Tentar novamente
+          </button>
+        </div>
+      </div>
+    );
+  }
 
-      if (app) {
-        if (app.status === 'approved') {
-          const profile = getLocalUserProfile(user.uid) || getLocalUserProfile(app.userId);
-          if (profile) {
-            setUserProfile(profile);
-            setCurrentScreen('bank');
-            setActiveTab('dashboard');
-            soundEffects.playPixSuccess();
-          }
-        } else {
-          // Status is pending or needs revision
-          setPendingApp(app);
-          setIsPendingApprovalModalOpen(true);
-        }
-      } else {
-        // Never create account without admin validation!
-        saveRegistrationDraft({
-          fullName: user.displayName || '',
-          preferredName: user.displayName?.split(' ')[0] || '',
-          email: userEmail,
-          selfiePhoto: user.photoURL || ''
-        });
-        setOpenAccountPrefill({ email: userEmail });
-        setIsOpenAccountModalOpen(true);
-        setNotification({
-          id: Date.now().toString(),
-          title: 'Cadastro Necessário',
-          message: 'Conectado com o Google! Agora preencha seus dados e fotos para validação da sua conta.',
-          type: 'card'
-        });
-      }
-    } catch (err: unknown) {
-      const authError = err as { code?: string; message?: string };
-      if (authError?.code !== 'auth/popup-closed-by-user') {
-        console.error('Google Sign-In Error:', err);
-        throw err;
-      }
-    }
-  };
-
-  // Logout Handler
-  const handleLogout = async () => {
-    try {
-      await logOut();
-    } catch (err) {
-      console.error('Error logging out:', err);
-    }
-    setCurrentScreen('onboarding');
-    setActiveTab('dashboard');
-    setUserProfile(initialUserProfile);
-    setTransactions([]);
-    setNotification({
-      id: Date.now().toString(),
-      title: 'Sessão Encerrada',
-      message: 'Você saiu da sua conta LeadsPay com segurança.',
-      type: 'card'
-    });
-  };
-
-  // Handle New Transaction (Pix, Tap to Pay, Card)
-  const handleNewTransaction = async (newTx: Transaction) => {
-    const currentUid = auth.currentUser?.uid || userProfile.uid;
-    const currentBalance = Math.max(0, userProfile.balance || 0);
-    const nextBalance = Math.max(0, currentBalance + newTx.amount);
-
-    if (currentUid) {
-      try {
-        await recordTransaction(currentUid, newTx, currentBalance);
-      } catch (err) {
-        console.error('Failed to record transaction to Firestore:', err);
-        // Optimistic fallback
-        setTransactions(prev => [newTx, ...prev]);
-        setUserProfile(prev => ({ ...prev, balance: nextBalance }));
-      }
-    } else {
-      setTransactions(prev => [newTx, ...prev]);
-      setUserProfile(prev => ({
-        ...prev,
-        balance: nextBalance
-      }));
-    }
-
-    // If it's a Tap to Pay sale, update the Vendas category
-    if (newTx.type === 'tap_to_pay') {
-      setCategories(prev => prev.map(c => {
-        if (c.name.includes('Vendas')) {
-          return { ...c, amount: c.amount + newTx.amount };
-        }
-        return c;
-      }));
-    }
-
-    // Trigger push notification toast
-    setNotification({
-      id: Date.now().toString(),
-      title: newTx.type === 'tap_to_pay' ? 'Venda LeadsTap Aprovada!' : 'Transação Realizada!',
-      message: `${newTx.title}: ${newTx.amount > 0 ? '+' : ''}R$ ${Math.abs(newTx.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
-      type: newTx.type === 'tap_to_pay' ? 'tap' : 'pix',
-      amount: newTx.amount
-    });
-  };
-
-  // Card Freeze Toggle
-  const handleToggleFreeze = async (cardId: string) => {
-    const currentUid = auth.currentUser?.uid || userProfile.uid;
-    const targetCard = cards.find(c => c.id === cardId);
-    if (!targetCard) return;
-
-    const nextState = !targetCard.isFrozen;
-    const updatedCard: VirtualCard = { ...targetCard, isFrozen: nextState };
-
-    if (currentUid) {
-      try {
-        await saveCard(currentUid, updatedCard);
-      } catch (err) {
-        console.error('Failed to update card freeze in Firestore:', err);
-      }
-    }
-
-    setCards(prev => prev.map(c => (c.id === cardId ? updatedCard : c)));
-    setNotification({
-      id: Date.now().toString(),
-      title: nextState ? 'Cartão Bloqueado' : 'Cartão Desbloqueado',
-      message: `${targetCard.name} foi ${nextState ? 'bloqueado' : 'desbloqueado'} com sucesso.`,
-      type: 'card'
-    });
-  };
-
-  // Card Limit Update
-  const handleUpdateLimit = async (cardId: string, newLimit: number) => {
-    const currentUid = auth.currentUser?.uid || userProfile.uid;
-    const targetCard = cards.find(c => c.id === cardId);
-    if (!targetCard) return;
-
-    const updatedCard: VirtualCard = { ...targetCard, limit: newLimit };
-
-    if (currentUid) {
-      try {
-        await saveCard(currentUid, updatedCard);
-      } catch (err) {
-        console.error('Failed to update card limit in Firestore:', err);
-      }
-    }
-
-    setCards(prev => prev.map(c => (c.id === cardId ? updatedCard : c)));
-    setNotification({
-      id: Date.now().toString(),
-      title: 'Limite Atualizado',
-      message: `Novo limite de R$ ${newLimit.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} definido.`,
-      type: 'card'
-    });
-  };
-
-  // Create Virtual Card
-  const handleCreateVirtualCard = async (name: string, category: VirtualCard['category']) => {
-    const currentUid = auth.currentUser?.uid || userProfile.uid;
-    const last4 = Math.floor(1000 + Math.random() * 9000);
-    const newCard: VirtualCard = {
-      id: 'card-' + Date.now(),
-      name,
-      type: 'virtual',
-      cardNumber: `5482 •••• •••• ${last4}`,
-      cardHolder: userProfile.name.toUpperCase(),
-      expiry: '09/31',
-      cvv: Math.floor(100 + Math.random() * 900).toString(),
-      cvvExpiresInSeconds: 86400,
-      isFrozen: false,
-      limit: 5000.00,
-      usedLimit: 0,
-      brand: 'mastercard',
-      color: 'linear-gradient(135deg, #0f1c13 0%, #172c1e 70%, #00e676 220%)',
-      category
-    };
-
-    if (currentUid) {
-      try {
-        await saveCard(currentUid, newCard);
-      } catch (err) {
-        console.error('Failed to save virtual card to Firestore:', err);
-      }
-    }
-
-    setCards(prev => [newCard, ...prev]);
-    soundEffects.playPixSuccess();
-    setNotification({
-      id: Date.now().toString(),
-      title: 'Cartão Virtual Criado!',
-      message: `${name} gerado instantaneamente com CVV dinâmico.`,
-      type: 'card'
-    });
-  };
-
-  // Developer API handlers
-  const handleGenerateKey = (name: string, env: 'production' | 'sandbox') => {
-    const hex = Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
-    const prefix = env === 'production' ? 'lp_live_' : 'lp_test_';
-    const newKey: DeveloperApiKey = {
-      id: 'key-' + Date.now(),
-      name,
-      keyPrefix: `${prefix}${hex.substring(0, 4)}••••••••••••••••`,
-      fullKey: `${prefix}${hex}`,
-      environment: env,
-      createdAt: 'Hoje',
-      lastUsed: 'Nunca'
-    };
-    setApiKeys(prev => [newKey, ...prev]);
-    soundEffects.playPixSuccess();
-  };
-
-  const handleAddWebhook = (url: string, events: string[]) => {
-    const newWh: WebhookConfig = {
-      id: 'wh-' + Date.now(),
-      url,
-      secret: 'whsec_' + Math.random().toString(36).substring(2, 16),
-      events,
-      isActive: true,
-      lastDeliveryStatus: '200_ok',
-      lastDeliveryTime: 'Registrado agora'
-    };
-    setWebhooks(prev => [newWh, ...prev]);
-    soundEffects.playPixSuccess();
-  };
-
-  // Handle manual or biometric access from access modal
-  const handleManualAccess = (profileOrIdentifier?: UserProfile | string) => {
-    if (typeof profileOrIdentifier === 'object' && profileOrIdentifier !== null) {
-      setUserProfile(profileOrIdentifier);
-      setCurrentScreen('bank');
-      setActiveTab('dashboard');
-      soundEffects.playPixSuccess();
-      return;
-    }
-
-    requestBiometric('Acessar LeadsPay Bank', () => {
-      if (typeof profileOrIdentifier === 'string' && profileOrIdentifier !== 'Biometria') {
-        setUserProfile(prev => ({
-          ...prev,
-          name: profileOrIdentifier.includes('@') ? profileOrIdentifier.split('@')[0] : prev.name
-        }));
-      }
-      setCurrentScreen('bank');
-      setActiveTab('dashboard');
-    });
-  };
-
-  // Handle access from login entry screen
-  const handleAccessFromOnboarding = () => {
-    setIsAccessAccountModalOpen(true);
-  };
-
-  // Handle account created from registration modal
-  const handleAccountCreated = async (newName: string, newEmail: string, cpf?: string, phone?: string) => {
-    const currentUid = auth.currentUser?.uid || `user-${Date.now()}`;
-    const newProfile: UserProfile = {
-      uid: currentUid,
-      name: newName,
-      email: newEmail,
-      document: cpf || '000.***.***-00',
-      accountNumber: `${Math.floor(10000 + Math.random() * 89999)}-${Math.floor(1 + Math.random() * 9)}`,
-      agency: '0001',
-      bankCode: '592 - LeadsPay S.A.',
-      balance: 0.00,
-      investedBalance: 0.00,
-      pixKeys: [
-        { type: 'email', value: newEmail },
-        { type: 'phone', value: phone || '+55 11 98842-7719' },
-        { type: 'random', value: `lp-${Math.random().toString(36).substring(2, 8)}` }
-      ],
-      biometricEnabled: true,
-      streetProtectionMode: false,
-      dailyPixLimit: 10000.00,
-      nightlyPixLimit: 1000.00
-    };
-
-    setUserProfile(newProfile);
-
-    if (auth.currentUser) {
-      try {
-        await setDoc(doc(db, 'users', auth.currentUser.uid), newProfile);
-      } catch (err) {
-        console.error('Failed to save user profile to Firestore:', err);
-      }
-    }
-
-    setCurrentScreen('bank');
-    setActiveTab('dashboard');
-  };
+  const balanceCents = sumBalanceCents(entries);
 
   return (
-    <div className="min-h-screen bg-black text-slate-100 flex flex-col items-center justify-start antialiased selection:bg-[#00e676] selection:text-black">
-      {/* Push Notification Toast */}
-      <NotificationToast
-        notification={notification}
-        onDismiss={() => setNotification(null)}
+    <div className="min-h-screen bg-[#050607] text-slate-100 pb-28">
+      <HeaderBar
+        profile={profile}
+        balanceCents={balanceCents}
+        displayName={authUser.displayName || authUser.email || ''}
       />
-
-      {/* Screen 1: EXACT Entry Screen from User Image */}
-      {currentScreen === 'onboarding' ? (
-        <div className="w-full min-h-screen flex items-center justify-center bg-black">
-          <div className="w-full max-w-md h-full min-h-[100dvh] sm:h-[880px] sm:min-h-0 sm:max-h-[920px] sm:rounded-[44px] shadow-2xl relative overflow-hidden bg-black flex flex-col justify-between sm:border sm:border-white/10">
-            <LoginEntryView
-              onAccessAccount={handleAccessFromOnboarding}
-              onOpenRegister={() => setIsOpenAccountModalOpen(true)}
-              onGoogleSignIn={handleGoogleSignIn}
-              onOpenQuickPix={() => {
-                setCurrentScreen('bank');
-                setIsPixModalOpen(true);
-              }}
-              onOpenSupport={() => setIsSupportOpen(true)}
-              onOpenToken={() => setIsTokenModalOpen(true)}
-            />
-          </div>
-        </div>
-      ) : (
-        /* Screen 2: Responsive Banking Experience */
-        <div className={`w-full transition-all duration-300 flex flex-col min-h-screen ${
-          isMobileFrame 
-            ? 'max-w-[420px] my-4 rounded-[44px] border-[5px] border-[#18261e] shadow-[0_0_80px_rgba(0,230,118,0.2)] overflow-hidden' 
-            : 'max-w-2xl sm:max-w-3xl lg:max-w-4xl'
-        }`}>
-          {/* Top Header */}
-          <HeaderBar
-            userProfile={userProfile}
-            showBalance={showBalance}
-            onToggleBalance={() => setShowBalance(!showBalance)}
-            onOpenSecurity={() => setIsSecurityOpen(true)}
-            onOpenSupport={() => setIsSupportOpen(true)}
-            onLogout={handleLogout}
-            isMobileFrame={isMobileFrame}
-            onToggleMobileFrame={() => setIsMobileFrame(!isMobileFrame)}
-            onOpenAdminReview={() => setIsAdminReviewModalOpen(true)}
+      <main className="max-w-2xl mx-auto px-4 pt-4">
+        {activeTab === 'inicio' && (
+          <DashboardView
+            profile={profile}
+            entries={entries}
+            balanceCents={balanceCents}
+            migration={migration}
+            migrationBusy={migrationBusy}
+            onRequestMigration={async () => {
+              setMigrationBusy(true);
+              try {
+                await requestLeadsPayMigration(authUser.uid);
+                showToast('Solicitação de migração registrada.', 'success');
+              } catch (err) {
+                showToast(
+                  err instanceof Error ? err.message : 'Falha ao registrar a migração.',
+                  'error',
+                );
+              } finally {
+                setMigrationBusy(false);
+              }
+            }}
+            onGoTab={setActiveTab}
           />
-
-          {/* Main Content Area with Fluid Transitions and bottom padding for the floating navigation dock */}
-          <main className="flex-1 p-3.5 sm:p-5 md:p-6 pb-28 sm:pb-32 w-full">
-            <AnimatePresence mode="wait">
-              {/* TAB 1: CONTA (Dashboard) */}
-              {activeTab === 'dashboard' && (
-                <motion.div
-                  key="dashboard"
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <DashboardView
-                    userProfile={userProfile}
-                    showBalance={showBalance}
-                    transactions={transactions}
-                    cards={cards}
-                    onOpenPix={() => setIsPixModalOpen(true)}
-                    onOpenTapToPay={() => setIsTapToPayOpen(true)}
-                    onOpenCards={() => setActiveTab('cards')}
-                    onOpenExtrato={() => setActiveTab('extrato')}
-                    onOpenFinance={() => setActiveTab('finance')}
-                    onOpenDevApi={() => setActiveTab('devapi')}
-                    onOpenSecurity={() => setIsSecurityOpen(true)}
-                  />
-                </motion.div>
-              )}
-
-              {/* TAB 2: VENDAS (Extrato Detalhado & Vendas) */}
-              {activeTab === 'extrato' && (
-                <motion.div
-                  key="extrato"
-                  initial={{ opacity: 0, x: 15 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -15 }}
-                  transition={{ duration: 0.22 }}
-                >
-                  <ExtratoView
-                    transactions={transactions}
-                    onBackToDashboard={() => setActiveTab('dashboard')}
-                  />
-                </motion.div>
-              )}
-
-              {/* TAB 3: CARTÕES (Virtual & Físico) */}
-              {activeTab === 'cards' && (
-                <motion.div
-                  key="cards"
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <CardsView
-                    cards={cards}
-                    onToggleFreeze={handleToggleFreeze}
-                    onUpdateLimit={handleUpdateLimit}
-                    onCreateVirtualCard={handleCreateVirtualCard}
-                    onRequestBiometric={requestBiometric}
-                  />
-                </motion.div>
-              )}
-
-              {/* TAB 4: AJUSTES (Settings, Finance, Security, API, Support) */}
-              {activeTab === 'ajustes' && (
-                <motion.div
-                  key="ajustes"
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <AjustesView
-                    userProfile={userProfile}
-                    onOpenFinance={() => setActiveTab('finance')}
-                    onOpenDevApi={() => setActiveTab('devapi')}
-                    onOpenSecurity={() => setIsSecurityOpen(true)}
-                    onOpenSupport={() => setIsSupportOpen(true)}
-                    onOpenPix={() => setIsPixModalOpen(true)}
-                    onLogout={handleLogout}
-                    onOpenAdminReview={() => setIsAdminReviewModalOpen(true)}
-                  />
-                </motion.div>
-              )}
-
-              {/* SUB-VIEW: GESTÃO FINANCEIRA */}
-              {activeTab === 'finance' && (
-                <motion.div
-                  key="finance"
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <div className="mb-4">
-                    <button
-                      onClick={() => setActiveTab('dashboard')}
-                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1 transition-colors"
-                    >
-                      ← Voltar para Minha Conta
-                    </button>
-                  </div>
-                  <FinancialManagementView
-                    categories={categories}
-                    transactions={transactions}
-                    balance={userProfile.balance}
-                  />
-                </motion.div>
-              )}
-
-              {/* SUB-VIEW: API DEVELOPER PORTAL */}
-              {activeTab === 'devapi' && (
-                <motion.div
-                  key="devapi"
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <div className="mb-4">
-                    <button
-                      onClick={() => setActiveTab('dashboard')}
-                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1 transition-colors"
-                    >
-                      ← Voltar para Minha Conta
-                    </button>
-                  </div>
-                  <DeveloperApiView
-                    apiKeys={apiKeys}
-                    webhooks={webhooks}
-                    onGenerateKey={handleGenerateKey}
-                    onAddWebhook={handleAddWebhook}
-                  />
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </main>
-
-          {/* Floating Mobile Bottom Navigation Dock */}
-          <BottomNavBar
-            currentTab={activeTab}
-            onSelectTab={(tab: MainTab) => setActiveTab(tab)}
-            onOpenLeadsTap={() => setIsTapToPayOpen(true)}
+        )}
+        {activeTab === 'extrato' && <ExtratoView entries={entries} />}
+        {activeTab === 'cobrar' && (
+          <TapView
+            uid={authUser.uid}
+            displayName={profile?.displayName || authUser.displayName || authUser.email || ''}
+            onDone={(msg) => showToast(msg, 'success')}
+            onError={(msg) => showToast(msg, 'error')}
           />
-        </div>
-      )}
-
-      {/* GLOBAL MODALS */}
-
-      {/* 1. Pix Modal (Instant transfers, QR Code, Receive, Key Management) */}
-      <PixModal
-        isOpen={isPixModalOpen}
-        onClose={() => setIsPixModalOpen(false)}
-        userProfile={userProfile}
-        onNewTransaction={handleNewTransaction}
-        onRequestBiometric={requestBiometric}
-      />
-
-      {/* 2. LeadsTap Contactless Tap-to-Pay on Phone (Point-of-Sale) */}
-      <LeadsTapModal
-        isOpen={isTapToPayOpen}
-        onClose={() => setIsTapToPayOpen(false)}
-        onNewTransaction={handleNewTransaction}
-      />
-
-      {/* 3. 24/7 Live Support Chat */}
-      <Support247Chat
-        isOpen={isSupportOpen}
-        onClose={() => setIsSupportOpen(false)}
-      />
-
-      {/* 4. Security Center & Knox Protection */}
-      <SecurityCenterModal
-        isOpen={isSecurityOpen}
-        onClose={() => setIsSecurityOpen(false)}
-        userProfile={userProfile}
-        onToggleStreetProtection={() => {
-          const nextVal = !userProfile.streetProtectionMode;
-          setUserProfile(prev => ({ ...prev, streetProtectionMode: nextVal }));
-          if (auth.currentUser) {
-            updateUserProfileInDb(auth.currentUser.uid, { streetProtectionMode: nextVal }).catch(console.error);
-          }
-        }}
-        onToggleBiometrics={() => {
-          const nextVal = !userProfile.biometricEnabled;
-          setUserProfile(prev => ({ ...prev, biometricEnabled: nextVal }));
-          if (auth.currentUser) {
-            updateUserProfileInDb(auth.currentUser.uid, { biometricEnabled: nextVal }).catch(console.error);
-          }
-        }}
-        onRequestBiometric={requestBiometric}
-      />
-
-      {/* 5. Biometric Laser Scanner Modal */}
-      <BiometricAuthModal
-        isOpen={biometricConfig.isOpen}
-        title={biometricConfig.title}
-        reason={biometricConfig.reason}
-        onSuccess={biometricConfig.onVerified}
-        onCancel={() => setBiometricConfig(prev => ({ ...prev, isOpen: false }))}
-      />
-
-      {/* 6. Dynamic Knox Security Token Modal */}
-      <TokenModal
-        isOpen={isTokenModalOpen}
-        onClose={() => setIsTokenModalOpen(false)}
-      />
-
-      {/* 7. Access Account Modal (Login with Google or credentials) */}
-      <AccessAccountModal
-        isOpen={isAccessAccountModalOpen}
-        onClose={() => setIsAccessAccountModalOpen(false)}
-        onGoogleSignIn={handleGoogleSignIn}
-        onManualAccess={handleManualAccess}
-        onOpenRegister={(prefill) => {
-          setOpenAccountPrefill(prefill);
-          setIsAccessAccountModalOpen(false);
-          setIsOpenAccountModalOpen(true);
-        }}
-        onShowPendingApproval={(app) => {
-          setPendingApp(app);
-          setIsAccessAccountModalOpen(false);
-          setIsPendingApprovalModalOpen(true);
-        }}
-      />
-
-      {/* 8. Open Account Modal with Google Sign-in & Registration */}
-      <OpenAccountModal
-        isOpen={isOpenAccountModalOpen}
-        onClose={() => {
-          setIsOpenAccountModalOpen(false);
-          setOpenAccountPrefill(undefined);
-        }}
-        initialIdentifier={openAccountPrefill}
-        onAccountCreated={handleAccountCreated}
-        onGoogleSignIn={handleGoogleSignIn}
-        onOpenLogin={() => {
-          setIsOpenAccountModalOpen(false);
-          setIsAccessAccountModalOpen(true);
-        }}
-        onApplicationSubmitted={(app) => {
-          setPendingApp(app);
-        }}
-      />
-
-      {/* 8b. Pending Approval Screen (Aguarde a aprovação da sua conta) */}
-      <PendingApprovalModal
-        isOpen={isPendingApprovalModalOpen}
-        onClose={() => setIsPendingApprovalModalOpen(false)}
-        application={pendingApp}
-        onOpenRevision={(app) => {
-          setIsPendingApprovalModalOpen(false);
-          setIsOpenAccountModalOpen(true);
-        }}
-        onApprovedLogin={(app) => {
-          setIsPendingApprovalModalOpen(false);
-          const profile = getLocalUserProfile(app.userId) || {
-            ...userProfile,
-            name: app.fullName,
-            preferredName: app.preferredName,
-            document: app.cpf,
-            email: app.email,
-            status: 'approved'
-          };
-          setUserProfile(profile);
-          setCurrentScreen('bank');
-          setActiveTab('dashboard');
-          soundEffects.playPixSuccess();
-        }}
-      />
-
-      {/* 9. Admin Review & KYC Compliance Portal (Exclusive to rickmarketing81@gmail.com) */}
-      <AdminReviewModal
-        isOpen={isAdminReviewModalOpen}
-        onClose={() => setIsAdminReviewModalOpen(false)}
-        currentUserEmail={userProfile.email || auth.currentUser?.email}
-        onApplicationApproved={(app) => {
-          if (auth.currentUser && app.userId === auth.currentUser.uid) {
-            setUserProfile(prev => ({
-              ...prev,
-              name: app.fullName,
-              preferredName: app.preferredName,
-              document: app.cpf,
-              birthDate: app.birthDate,
-              status: 'approved'
-            }));
-          }
-        }}
-      />
+        )}
+        {activeTab === 'pix' && (
+          <PixView
+            uid={authUser.uid}
+            displayName={profile?.displayName || authUser.displayName || authUser.email || ''}
+            profile={profile}
+            onDone={(msg) => showToast(msg, 'success')}
+            onError={(msg) => showToast(msg, 'error')}
+          />
+        )}
+        {activeTab === 'ajustes' && (
+          <AjustesView
+            profile={profile}
+            migration={migration}
+            onLogout={async () => {
+              try {
+                await logOut();
+              } catch (err) {
+                showToast(
+                  err instanceof Error ? err.message : 'Falha ao sair.',
+                  'error',
+                );
+              }
+            }}
+          />
+        )}
+      </main>
+      <BottomNavBar currentTab={activeTab} onSelectTab={setActiveTab} />
+      <NotificationToast toast={toast} />
+      <div className="max-w-2xl mx-auto px-4 pt-6 flex justify-center opacity-60">
+        <BrandLogo size="sm" />
+      </div>
     </div>
   );
 }
