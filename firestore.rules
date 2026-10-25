@@ -14,21 +14,64 @@ service cloud.firestore {
       return isSignedIn() && request.auth.token.email == 'rickmarketing81@gmail.com';
     }
 
-    // Individual User Account Document & all Subcollections
+    // Perfil do usuário: somente o dono (ou admin).
     match /users/{userId} {
       allow read, write: if isOwner(userId) || isAdmin();
-
-      match /{subcollection=**} {
-        allow read, write: if isOwner(userId) || isAdmin();
-      }
     }
 
-    // KYC & Account Registration Applications
-    match /account_applications/{applicationId} {
-      allow list, get: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      allow update: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
-      allow delete: if isAdmin();
+    // Ledger: entradas imutáveis. Quem executa um movimento (o pagador) cria
+    // as duas pontas: a própria (ownerUid = ele) e a da contraparte
+    // (counterpartyUid = ele). Não há update nem delete: o ledger não se reescreve.
+    // Limitação honesta: as regras não verificam o pareamento das duas pontas
+    // nem o saldo — isso é feito pela transação do cliente. Antes de qualquer
+    // trilho de dinheiro real, a validação precisa passar para o servidor.
+    match /ledger_entries/{entryId} {
+      allow read: if isAdmin() || (isSignedIn() && (resource.data.ownerUid == request.auth.uid || resource.data.counterpartyUid == request.auth.uid));
+      allow create: if isSignedIn() && (request.resource.data.ownerUid == request.auth.uid || request.resource.data.counterpartyUid == request.auth.uid);
+      allow update, delete: if false;
+    }
+
+    // Cobranças LeadsTap (circuito fechado, sem cartão).
+    match /charges/{chargeId} {
+      allow create: if isSignedIn() && request.resource.data.sellerUid == request.auth.uid;
+      allow read: if isAdmin() || (isSignedIn() && (resource.data.status == 'open' || resource.data.sellerUid == request.auth.uid || resource.data.payerUid == request.auth.uid));
+      // Pagamento: cobrança aberta -> paga, pelo pagador, sem alterar valores.
+      // Cancelamento: cobrança aberta -> cancelada, pelo vendedor, sem alterar valores.
+      allow update: if isSignedIn() && (
+        (
+          resource.data.status == 'open'
+          && request.resource.data.status == 'paid'
+          && request.resource.data.payerUid == request.auth.uid
+          && request.resource.data.sellerUid == resource.data.sellerUid
+          && request.resource.data.amountGrossCents == resource.data.amountGrossCents
+          && request.resource.data.feeCents == resource.data.feeCents
+          && request.resource.data.netCents == resource.data.netCents
+        ) || (
+          resource.data.status == 'open'
+          && request.resource.data.status == 'cancelled'
+          && resource.data.sellerUid == request.auth.uid
+          && request.resource.data.amountGrossCents == resource.data.amountGrossCents
+          && request.resource.data.feeCents == resource.data.feeCents
+          && request.resource.data.netCents == resource.data.netCents
+        )
+      );
+      allow delete: if false;
+    }
+
+    // Índice chave Pix -> usuário. Qualquer usuário logado pode resolver uma
+    // chave para pagar (só vê chave, uid e nome). Só o dono cria/remove.
+    match /pix_keys/{keyId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid && request.resource.data.key == keyId;
+      allow update, delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    // Migração LeadsPay -> LeadsTap: o usuário cria e lê a própria solicitação.
+    // Mudança de status (liquidação) é papel do backend/admin, nunca do cliente.
+    match /migrations/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if isAdmin();
     }
   }
 }

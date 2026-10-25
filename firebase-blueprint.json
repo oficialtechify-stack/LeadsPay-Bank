@@ -1,83 +1,275 @@
 {
   "entities": {
-    "UserProfile": {
-      "title": "UserProfile",
-      "description": "Individual LeadsPay user account and preferences",
-      "type": "object",
+    "LeadsTapProfile": {
+      "description": "Conta LeadsTap de um usuário: identidade real do Firebase Auth, sem dados bancários, sem saldo guardado (saldo = soma do ledger).",
       "properties": {
-        "uid": { "type": "string", "description": "User unique identifier matching auth.uid" },
-        "name": { "type": "string", "description": "Full name of the account holder" },
-        "email": { "type": "string", "description": "Email address" },
-        "photoURL": { "type": "string", "description": "Avatar photo URL" },
-        "document": { "type": "string", "description": "CPF or document number" },
-        "accountNumber": { "type": "string", "description": "Bank account number" },
-        "agency": { "type": "string", "description": "Bank agency" },
-        "bankCode": { "type": "string", "description": "Bank name and code" },
-        "balance": { "type": "number", "description": "Current available balance" },
-        "investedBalance": { "type": "number", "description": "Automated yield balance" },
-        "biometricEnabled": { "type": "boolean", "description": "Biometric protection state" },
-        "streetProtectionMode": { "type": "boolean", "description": "Street mode protection status" },
-        "dailyPixLimit": { "type": "number", "description": "Daily Pix transfer limit" },
-        "nightlyPixLimit": { "type": "number", "description": "Nightly Pix transfer limit" },
-        "createdAt": { "type": "string", "description": "Creation timestamp" }
+        "createdAt": {
+          "description": "Creation timestamp",
+          "type": "string"
+        },
+        "displayName": {
+          "description": "Display name from the authenticated user",
+          "type": "string"
+        },
+        "email": {
+          "description": "Email address from the authenticated user",
+          "type": "string"
+        },
+        "migratedFromLeadsPay": {
+          "description": "True only after completed LeadsPay -> LeadsTap settlement (backend)",
+          "type": "boolean"
+        },
+        "photoURL": {
+          "description": "Avatar photo URL from the authenticated user",
+          "type": "string"
+        },
+        "pixKeys": {
+          "description": "Pix keys registered by the user (identifiers inside LeadsTap)",
+          "type": "array"
+        },
+        "uid": {
+          "description": "User unique identifier matching auth.uid",
+          "type": "string"
+        }
       },
-      "required": ["uid", "name", "email", "balance"]
+      "required": [
+        "uid",
+        "displayName",
+        "email"
+      ],
+      "title": "LeadsTapProfile",
+      "type": "object"
     },
-    "Transaction": {
-      "title": "Transaction",
-      "description": "Individual banking transaction entry",
-      "type": "object",
+    "LedgerEntry": {
+      "description": "One side of a real money movement, from the owner's perspective. Two-sided movements share a groupId and are written in one Firestore transaction.",
       "properties": {
-        "id": { "type": "string", "description": "Unique transaction ID" },
-        "userId": { "type": "string", "description": "Owner user UID" },
-        "title": { "type": "string", "description": "Title or concept" },
-        "description": { "type": "string", "description": "Detailed notes" },
-        "amount": { "type": "number", "description": "Value (positive for credits, negative for debits)" },
-        "type": { "type": "string", "enum": ["pix_received", "pix_sent", "tap_to_pay", "card_spend", "deposit", "investment"] },
-        "status": { "type": "string", "enum": ["completed", "pending", "failed"] },
-        "category": { "type": "string", "description": "Financial category" },
-        "dateFormatted": { "type": "string", "description": "Friendly date string" },
-        "timestamp": { "type": "number", "description": "Epoch timestamp" },
-        "recipientOrSender": { "type": "string", "description": "Other party name" }
+        "amountCents": {
+          "description": "Signed amount in cents, from the owner's perspective",
+          "type": "number"
+        },
+        "counterpartyName": {
+          "description": "Other party display name",
+          "type": "string"
+        },
+        "counterpartyUid": {
+          "description": "Other party user UID",
+          "type": "string"
+        },
+        "createdAt": {
+          "description": "Creation timestamp",
+          "type": "string"
+        },
+        "description": {
+          "description": "Description shown on the statement",
+          "type": "string"
+        },
+        "feeCents": {
+          "description": "Single fee deducted (tap receipts: R$ 0,99)",
+          "type": "number"
+        },
+        "grossCents": {
+          "description": "Gross amount charged (tap receipts)",
+          "type": "number"
+        },
+        "groupId": {
+          "description": "Shared ID of both sides of the same movement",
+          "type": "string"
+        },
+        "id": {
+          "description": "Unique entry ID",
+          "type": "string"
+        },
+        "ownerUid": {
+          "description": "Owner user UID",
+          "type": "string"
+        },
+        "relatedChargeId": {
+          "description": "Charge ID for tap movements",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "completed"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "pix_in",
+            "pix_out",
+            "tap_payment",
+            "tap_receipt",
+            "withdrawal"
+          ],
+          "type": "string"
+        }
       },
-      "required": ["id", "userId", "title", "amount", "type", "timestamp"]
+      "required": [
+        "id",
+        "groupId",
+        "ownerUid",
+        "counterpartyUid",
+        "type",
+        "amountCents"
+      ],
+      "title": "LedgerEntry",
+      "type": "object"
     },
-    "VirtualCard": {
-      "title": "VirtualCard",
-      "description": "Virtual or physical debit/credit card for user",
-      "type": "object",
+    "MigrationRequest": {
+      "description": "Explicit one-tap opt-in to receive a LeadsPay balance on LeadsTap. Creating it moves NO money: cross-system settlement is pending backend integration.",
       "properties": {
-        "id": { "type": "string", "description": "Card identifier" },
-        "userId": { "type": "string", "description": "Owner user UID" },
-        "name": { "type": "string", "description": "Card nickname" },
-        "type": { "type": "string", "enum": ["virtual", "physical"] },
-        "cardNumber": { "type": "string", "description": "Masked card number" },
-        "cardHolder": { "type": "string", "description": "Printed name" },
-        "expiry": { "type": "string", "description": "MM/YY expiry" },
-        "cvv": { "type": "string", "description": "Current CVV code" },
-        "cvvExpiresInSeconds": { "type": "number", "description": "CVV TTL in seconds" },
-        "isFrozen": { "type": "boolean", "description": "Card lock status" },
-        "limit": { "type": "number", "description": "Monthly credit limit" },
-        "usedLimit": { "type": "number", "description": "Currently spent limit" },
-        "brand": { "type": "string", "description": "Card brand" },
-        "color": { "type": "string", "description": "Background gradient" },
-        "category": { "type": "string", "description": "Usage label" }
+        "id": {
+          "description": "Same as the user UID",
+          "type": "string"
+        },
+        "note": {
+          "description": "Honest pending-settlement note",
+          "type": "string"
+        },
+        "requestedAt": {
+          "description": "Request timestamp",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "awaiting_confirmation"
+          ],
+          "type": "string"
+        },
+        "uid": {
+          "description": "Requesting user UID",
+          "type": "string"
+        }
       },
-      "required": ["id", "userId", "name", "cardNumber", "isFrozen", "limit"]
+      "required": [
+        "id",
+        "uid",
+        "status"
+      ],
+      "title": "MigrationRequest",
+      "type": "object"
+    },
+    "PixKeyRecord": {
+      "description": "Pix key -> user index, so one LeadsTap user can pay another by key.",
+      "properties": {
+        "createdAt": {
+          "description": "Creation timestamp",
+          "type": "string"
+        },
+        "key": {
+          "description": "Normalized Pix key (also the document ID)",
+          "type": "string"
+        },
+        "ownerName": {
+          "description": "Owner display name shown for payment confirmation",
+          "type": "string"
+        },
+        "uid": {
+          "description": "Owner user UID",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "uid",
+        "ownerName"
+      ],
+      "title": "PixKeyRecord",
+      "type": "object"
+    },
+    "TapCharge": {
+      "description": "Closed-loop LeadsTap charge: a seller creates it, another LeadsTap user pays it with real balance. No card, no acquirer.",
+      "properties": {
+        "amountGrossCents": {
+          "description": "Gross amount charged in cents",
+          "type": "number"
+        },
+        "code": {
+          "description": "Short code the payer types to find the charge",
+          "type": "string"
+        },
+        "createdAt": {
+          "description": "Creation timestamp",
+          "type": "string"
+        },
+        "description": {
+          "description": "Sale description",
+          "type": "string"
+        },
+        "feeCents": {
+          "description": "Single sale fee in cents (R$ 0,99)",
+          "type": "number"
+        },
+        "id": {
+          "description": "Unique charge ID",
+          "type": "string"
+        },
+        "netCents": {
+          "description": "Net amount credited to the seller in cents",
+          "type": "number"
+        },
+        "paidAt": {
+          "description": "Payment timestamp",
+          "type": "string"
+        },
+        "payerName": {
+          "description": "Payer display name (after payment)",
+          "type": "string"
+        },
+        "payerUid": {
+          "description": "Payer user UID (after payment)",
+          "type": "string"
+        },
+        "sellerName": {
+          "description": "Seller display name",
+          "type": "string"
+        },
+        "sellerUid": {
+          "description": "Seller user UID",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "open",
+            "paid",
+            "cancelled"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "code",
+        "sellerUid",
+        "amountGrossCents",
+        "feeCents",
+        "netCents",
+        "status"
+      ],
+      "title": "TapCharge",
+      "type": "object"
     }
   },
   "firestore": {
+    "/charges/{chargeId}": {
+      "description": "Closed-loop LeadsTap charges",
+      "schema": "TapCharge"
+    },
+    "/ledger_entries/{entryId}": {
+      "description": "Real ledger: balance is the sum of a user's entries",
+      "schema": "LedgerEntry"
+    },
+    "/migrations/{userId}": {
+      "description": "LeadsPay -> LeadsTap migration requests (settlement pending backend)",
+      "schema": "MigrationRequest"
+    },
+    "/pix_keys/{keyId}": {
+      "description": "Pix key -> user index for internal payments",
+      "schema": "PixKeyRecord"
+    },
     "/users/{userId}": {
-      "schema": "UserProfile",
-      "description": "User profile with personal balance and settings"
-    },
-    "/users/{userId}/transactions/{transactionId}": {
-      "schema": "Transaction",
-      "description": "Personal ledger transactions"
-    },
-    "/users/{userId}/cards/{cardId}": {
-      "schema": "VirtualCard",
-      "description": "User's debit and virtual cards"
+      "description": "LeadsTap user profile (real Firebase Auth identity)",
+      "schema": "LeadsTapProfile"
     }
   }
 }
