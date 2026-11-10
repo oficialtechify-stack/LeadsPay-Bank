@@ -196,8 +196,13 @@ export const Shell: React.FC<ShellProps> = (props) => {
     }
   };
 
+  // FIX faixa branca (10/11): a raiz do Shell NÃO tinha largura — como o
+  // App.tsx monta o Shell dentro de um flex-col com items-center, o div
+  // encolhia para o conteúdo (72 + 1200 = 1272px) e centralizava, deixando
+  // o bg-white do App aparecer nas duas laterais. Com w-full o Shell cobre
+  // a viewport inteira e as margens passam a ser o fundo do tema.
   return (
-    <div className="min-h-screen bg-[var(--shell-bg)] text-[var(--shell-text)]">
+    <div className="min-h-screen w-full bg-[var(--shell-bg)] text-[var(--shell-text)]">
       <Sidebar
         route={route}
         navigate={navigate}
@@ -207,13 +212,24 @@ export const Shell: React.FC<ShellProps> = (props) => {
         onLogout={onLogout}
       />
       <div className="ml-[72px] flex min-h-screen flex-col">
-        <TopBar
-          userProfile={userProfile}
-          showBalance={showBalance}
-          onToggleBalance={onToggleBalance}
-          setShellUi={setShellUi}
-        />
-        <main className="mx-auto w-full max-w-[1200px] flex-1 px-6 py-6">
+        {/* Home (U1) não tem TopBar — igual à Home da InfinitePay do print. */}
+        {route.name !== 'conta' && (
+          <TopBar
+            userProfile={userProfile}
+            showBalance={showBalance}
+            onToggleBalance={onToggleBalance}
+            setShellUi={setShellUi}
+          />
+        )}
+        {/* Home em largura total (igual ao print); demais telas seguem com
+            largura máxima centralizada de 1200px. */}
+        <main
+          className={
+            route.name === 'conta'
+              ? 'w-full flex-1 px-6 py-6'
+              : 'mx-auto w-full max-w-[1200px] flex-1 px-6 py-6'
+          }
+        >
           <SyncBanner syncState={syncState} />
           <AnimatePresence mode="wait">
             <motion.div
