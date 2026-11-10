@@ -11,8 +11,6 @@ import { LinkBioModal } from './LinkBioModal';
 import { AjudaWidget } from './AjudaWidget';
 import { SyncBanner } from './shared';
 import { SoonView } from '../SoonView';
-import { MoedasView } from '../MoedasView';
-import { DeveloperApiView } from '../DeveloperApiView';
 import { PainelHome } from './PainelHome';
 import { PainelAssistenteView } from './PainelAssistenteView';
 import { PainelExtrato } from './PainelExtrato';
@@ -58,7 +56,11 @@ export interface ShellProps
   onOpenSecurityModal: () => void;
   /** Persiste os limites Pix (usado pelo drawer U23). */
   onSavePixLimits: (daily: number, nightly: number) => void;
-  /** Dados da rota `api` (DeveloperApiView mantida, fora do sidebar). */
+  /**
+   * Dados da API (chaves/webhooks): o App continua repassando porque o
+   * CELULAR usa a tela de API — no painel web a tela não é montada
+   * (regra do Rick 10/11: só as telas do mapa web). O Shell ignora.
+   */
   apiKeys: DeveloperApiKey[];
   webhooks: WebhookConfig[];
   onGenerateKey: (name: string, env: 'production' | 'sandbox') => void;
@@ -87,10 +89,8 @@ export const Shell: React.FC<ShellProps> = (props) => {
     onOpenTapModal,
     onOpenSecurityModal,
     onSavePixLimits,
-    apiKeys,
-    webhooks,
-    onGenerateKey,
-    onAddWebhook,
+    // apiKeys/webhooks/onGenerateKey/onAddWebhook: recebidos do App mas
+    // ignorados aqui — a tela de API é só do celular (ver acima).
     onToggleFreeze,
     onUpdateLimit,
     onRefresh,
@@ -178,17 +178,11 @@ export const Shell: React.FC<ShellProps> = (props) => {
         return <PainelAcademy {...painelProps} />;
       case 'ajustes':
         return <PainelConfiguracoes {...painelProps} />;
-      case 'moedas':
-        return <MoedasView transactions={transactions} />;
-      case 'api':
-        return (
-          <DeveloperApiView
-            apiKeys={apiKeys}
-            webhooks={webhooks}
-            onGenerateKey={onGenerateKey}
-            onAddWebhook={onAddWebhook}
-          />
-        );
+      // REGRA DO RICK (10/11): no painel web entram SÓ as telas do mapa web
+      // da InfinitePay. 'moedas' e 'api' são telas SÓ do celular — não têm
+      // tela no desktop e caem no default (Home). Os arquivos
+      // MoedasView.tsx e DeveloperApiView.tsx CONTINUAM no repo: o celular
+      // usa eles; só a montagem no Shell desktop foi retirada.
       case 'soon':
         return <SoonView title={current.title} reason={current.reason} onBack={navigate} backTo={current.backTo} />;
       default:
