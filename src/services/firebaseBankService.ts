@@ -345,8 +345,21 @@ export async function getServerCards(uid: string): Promise<VirtualCard[]> {
   return cards;
 }
 
+export interface SyncState {
+  /** true até as 3 fontes (perfil, transações, cartões) entregarem OU errarem. */
+  loading: boolean;
+  /** Primeira mensagem de erro entre as 3 fontes, ou null. */
+  error: string | null;
+}
+
 /**
- * Real-time listener for user profile, individual transactions, and cards
+ * Real-time listener for user profile, individual transactions, and cards.
+ * v3.2 §D7.5: `onSyncState` (opcional) distingue loading / vazio / erro.
+ * Semântica: loading=true até as 3 fontes entregarem ou errarem; error é a
+ * PRIMEIRA mensagem de erro; snapshot vazio chama onTransactions([]) /
+ * onCards([]) (antes o callback só disparava com length > 0, então o
+ * vazio era indistinguível do loading). Quando uma fonte erra, os dados
+ * dela ficam no último cache conhecido (a tela marca "salvos no aparelho").
  */
 export function subscribeToUserAccount(
   uid: string,
@@ -354,6 +367,7 @@ export function subscribeToUserAccount(
     onProfile: (profile: UserProfile) => void;
     onTransactions: (transactions: Transaction[]) => void;
     onCards: (cards: VirtualCard[]) => void;
+    onSyncState?: (state: SyncState) => void;
   }
 ): () => void {
   // Always load initial individual user state from localStorage first
@@ -366,19 +380,40 @@ export function subscribeToUserAccount(
   const cachedCards = getLocalCards(uid);
   if (cachedCards.length > 0) callbacks.onCards(cachedCards);
 
+  const settled: { profile: boolean; tx: boolean; cards: boolean } = {
+    profile: false,
+    tx: false,
+    cards: false,
+  };
+  let firstError: string | null = null;
+  const emitSyncState = () => {
+    callbacks.onSyncState?.({
+      loading: !(settled.profile && settled.tx && settled.cards),
+      error: firstError,
+    });
+  };
+  const fail = (key: keyof typeof settled, message: string) => {
+    settled[key] = true;
+    if (firstError === null) firstError = message;
+    emitSyncState();
+  };
+
   // Then listen to live Firestore if permitted
   const unsubProfile = onSnapshot(
     doc(db, 'users', uid),
     (docSnap) => {
+      settled.profile = true;
       if (docSnap.exists()) {
         const data = docSnap.data() as UserProfile;
         data.uid = uid;
         saveLocalUserProfile(uid, data);
         callbacks.onProfile(data);
       }
+      emitSyncState();
     },
     (err) => {
       console.warn('Firestore profile sync error (using local storage fallback):', err.message);
+      fail('profile', err.message);
     }
   );
 
@@ -394,13 +429,19 @@ export function subscribeToUserAccount(
         const timeB = new Date(b.timestamp).getTime() || 0;
         return timeB - timeA;
       });
+      settled.tx = true;
       if (txs.length > 0) {
         saveLocalTransactions(uid, txs);
         callbacks.onTransactions(txs);
+      } else {
+        // Snapshot vazio É um dado (zero transações), não loading.
+        callbacks.onTransactions([]);
       }
+      emitSyncState();
     },
     (err) => {
       console.warn('Firestore transactions sync error (using local storage fallback):', err.message);
+      fail('tx', err.message);
     }
   );
 
@@ -411,15 +452,24 @@ export function subscribeToUserAccount(
       snapshot.forEach((d) => {
         cards.push(d.data() as VirtualCard);
       });
+      settled.cards = true;
       if (cards.length > 0) {
         saveLocalCards(uid, cards);
         callbacks.onCards(cards);
+      } else {
+        // Snapshot vazio É um dado (zero cartões), não loading.
+        callbacks.onCards([]);
       }
+      emitSyncState();
     },
     (err) => {
       console.warn('Firestore cards sync error (using local storage fallback):', err.message);
+      fail('cards', err.message);
     }
   );
+
+  // Estado inicial: loading até o primeiro snapshot de cada fonte.
+  emitSyncState();
 
   return () => {
     unsubProfile();
@@ -462,7 +512,10 @@ export async function recordTransaction(uid: string, tx: Transaction, currentBal
 }
 
 /**
- * Save or update a card in Firestore and local storage
+ * Save or update a card in Firestore and local storage.
+ * v3.2: relança o erro do Firestore depois de logar (o local já foi salvo).
+ * Chamadores que precisam de revert-on-error (ex.: freeze) dependem disso:
+ * antes o erro era engolido e o toast de sucesso aparecia sem sincronizar.
  */
 export async function saveCard(uid: string, card: VirtualCard): Promise<void> {
   const currentCards = getLocalCards(uid);
@@ -478,6 +531,7 @@ export async function saveCard(uid: string, card: VirtualCard): Promise<void> {
     });
   } catch (error) {
     console.warn('Could not sync card to cloud Firestore (saved locally):', error);
+    throw error;
   }
 }
 

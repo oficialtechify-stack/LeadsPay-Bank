@@ -3,7 +3,6 @@ import {
   ShieldCheck, 
   PieChart, 
   Code2, 
-  Headphones, 
   Sliders, 
   Smartphone, 
   Key, 
@@ -21,7 +20,6 @@ interface AjustesViewProps {
   onOpenFinance: () => void;
   onOpenDevApi: () => void;
   onOpenSecurity: () => void;
-  onOpenSupport: () => void;
   onOpenPix: () => void;
   onLogout: () => void;
   onOpenAdminReview?: () => void;
@@ -35,7 +33,6 @@ export const AjustesView: React.FC<AjustesViewProps> = ({
   onOpenFinance,
   onOpenDevApi,
   onOpenSecurity,
-  onOpenSupport,
   onOpenPix,
   onLogout,
   onOpenAdminReview,
@@ -186,27 +183,6 @@ export const AjustesView: React.FC<AjustesViewProps> = ({
               </span>
               <span className="text-[11px] text-zinc-500">
                 Face ID / Touch ID, Modo Rua e Dispositivos
-              </span>
-            </div>
-          </div>
-          <ChevronRight className="w-4 h-4 text-zinc-400 group-hover:text-zinc-950 transition-colors" />
-        </button>
-
-        {/* Option 4: Suporte 24/7 */}
-        <button
-          onClick={onOpenSupport}
-          className="w-full p-3.5 rounded-2xl bg-[#f4f4f5] hover:bg-zinc-200/60 border border-black/[0.06] hover:border-[#00e676]/40 transition-all flex items-center justify-between group"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-100 border border-blue-200 text-blue-600 flex items-center justify-center group-hover:scale-105 transition-transform">
-              <Headphones className="w-5 h-5" />
-            </div>
-            <div className="text-left">
-              <span className="text-xs sm:text-sm font-semibold text-zinc-950 block">
-                Suporte Bancário 24/7
-              </span>
-              <span className="text-[11px] text-zinc-500">
-                Atendimento por IA e Especialista Humano
               </span>
             </div>
           </div>

@@ -14,7 +14,9 @@ import { TOP_TABS } from '../lib/routes';
  * Adaptado ao modelo de dados do Bank (sem LedgerEntry / lib/leadstap).
  */
 
-export const SPRING = { type: 'spring', bounce: 0, duration: 0.3 } as const;
+export const SPRING = { type: 'spring', stiffness: 350, damping: 35, mass: 1 } as const;
+
+/** Spring padrão do painel novo (v3.2 §D7.2): stiffness/damping com números. */
 
 /** Abas do topo em pílula — ativa preta com texto branco; nula em rota interna. */
 export const TopPillTabs: React.FC<{
@@ -48,12 +50,12 @@ export const SectionTitle: React.FC<{ children: React.ReactNode }> = ({ children
   <h2 className="text-[20px] font-bold tracking-[-0.02em] text-zinc-950">{children}</h2>
 );
 
-/** Card cinza claro — a superfície padrão das telas. */
+/** Card cinza claro — a superfície padrão das telas (tokens do shell novo). */
 export const Card: React.FC<{ className?: string; children: React.ReactNode }> = ({
   className = '',
   children,
 }) => (
-  <section className={`rounded-[24px] bg-[#f4f4f5] p-5 ${className}`}>{children}</section>
+  <section className={`rounded-[20px] bg-[var(--shell-surface-2)] p-5 ${className}`}>{children}</section>
 );
 
 /** Card branco com borda fina — para listas e linhas de conta. */
@@ -61,15 +63,19 @@ export const WhiteCard: React.FC<{ className?: string; children: React.ReactNode
   className = '',
   children,
 }) => (
-  <section className={`rounded-[24px] border border-black/[0.06] bg-white p-5 ${className}`}>
+  <section className={`rounded-[20px] border border-[var(--shell-border)] bg-[var(--shell-surface)] p-5 ${className}`}>
     {children}
   </section>
 );
 
-/** Selo verde-limão "Em breve" — função que ainda não existe. */
-export const SoonBadge: React.FC = () => (
-  <span className="inline-flex items-center rounded-full bg-[#bef264] px-2 py-0.5 text-[10px] font-bold tracking-wide text-zinc-950">
-    Em breve
+/** Selo verde-limão "Em breve" — função que ainda não existe (v3.2 §D7.5:
+ *  aceita `reason` para dizer o motivo em uma linha, quando houver). */
+export const SoonBadge: React.FC<{ reason?: string }> = ({ reason }) => (
+  <span
+    className="inline-flex items-center rounded-full bg-[var(--shell-lima)] px-2 py-0.5 text-[10px] font-bold tracking-wide text-zinc-950"
+    title={reason}
+  >
+    Em breve{reason ? ` — ${reason}` : ''}
   </span>
 );
 
@@ -142,10 +148,10 @@ export const PrimaryButton: React.FC<{
     disabled={disabled}
     className={`w-full rounded-full py-3.5 text-[15px] font-semibold disabled:opacity-40 ${
       variant === 'black'
-        ? 'bg-zinc-950 text-white'
+        ? 'bg-[var(--shell-black)] text-[var(--shell-on-black)]'
         : variant === 'green'
-          ? 'bg-[#00e676] text-black'
-          : 'border border-black/15 bg-white text-zinc-900'
+          ? 'bg-[var(--shell-lima)] text-black'
+          : 'border border-[var(--shell-border)] bg-[var(--shell-surface)] text-[var(--shell-text)]'
     }`}
   >
     {children}
@@ -153,7 +159,7 @@ export const PrimaryButton: React.FC<{
 );
 
 export const inputClass =
-  'w-full rounded-2xl bg-[#f4f4f5] border border-black/[0.06] px-4 py-3 text-[15px] text-zinc-950 placeholder:text-zinc-400 outline-none focus:border-zinc-950';
+  'w-full rounded-2xl bg-[var(--shell-surface-2)] border border-[var(--shell-border)] px-4 py-3 text-[15px] text-[var(--shell-text)] placeholder:text-[var(--shell-muted)] outline-none focus:border-[var(--shell-text)]';
 
 /** Botão Voltar das telas internas. */
 export const BackButton: React.FC<{ onClick: () => void; label?: string }> = ({
@@ -173,8 +179,8 @@ export const BackButton: React.FC<{ onClick: () => void; label?: string }> = ({
 );
 
 export const EmptyState: React.FC<{ title: string; text: string }> = ({ title, text }) => (
-  <div className="rounded-[24px] bg-[#f4f4f5] p-5">
-    <p className="font-semibold text-zinc-900">{title}</p>
-    <p className="text-sm text-zinc-500 mt-1 leading-relaxed">{text}</p>
+  <div className="rounded-[20px] bg-[var(--shell-surface-2)] p-5">
+    <p className="font-semibold text-[var(--shell-text)]">{title}</p>
+    <p className="text-sm text-[var(--shell-muted)] mt-1 leading-relaxed">{text}</p>
   </div>
 );

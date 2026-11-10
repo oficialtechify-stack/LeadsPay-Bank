@@ -1,9 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   ArrowUpRight, 
-  Sparkles, 
-  KeyRound, 
-  ChevronRight
+  KeyRound
 } from 'lucide-react';
 import { 
   getLocalLoginBanners, 
@@ -15,7 +13,6 @@ interface LoginEntryViewProps {
   onAccessAccount: () => void;
   onOpenRegister: () => void;
   onOpenQuickPix: () => void;
-  onOpenSupport: () => void;
   onOpenToken: () => void;
   onGoogleSignIn?: () => Promise<void>;
 }
@@ -24,7 +21,6 @@ export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
   onAccessAccount,
   onOpenRegister,
   onOpenQuickPix,
-  onOpenSupport,
   onOpenToken
 }) => {
   const [banners, setBanners] = useState<[string, string, string]>(() => getLocalLoginBanners());
@@ -236,25 +232,6 @@ export const LoginEntryView: React.FC<LoginEntryViewProps> = ({
               className="w-full py-3.5 px-4 rounded-full bg-black/40 hover:bg-black/70 active:scale-[0.99] border border-[#a3e635]/80 hover:border-[#a3e635] text-[#a3e635] hover:text-[#bef264] font-bold text-sm transition-all duration-200 cursor-pointer text-center"
             >
               Criar conta
-            </button>
-          </div>
-
-          {/* Footer inside the card: Precisa de ajuda? */}
-          <div className="mt-4 pt-3 border-t border-white/10 flex items-center justify-between">
-            <button
-              onClick={onOpenSupport}
-              className="text-[11px] sm:text-xs text-[#a0ada3] hover:text-white transition-colors cursor-pointer"
-            >
-              Precisa de ajuda?
-            </button>
-
-            <button
-              onClick={onOpenSupport}
-              className="flex items-center gap-0.5 text-slate-300 hover:text-[#a3e635] transition-colors p-1 cursor-pointer"
-              title="Ajuda com Inteligência LeadsPay"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-slate-300" />
-              <ChevronRight className="w-3 h-3 text-slate-400" />
             </button>
           </div>
         </div>

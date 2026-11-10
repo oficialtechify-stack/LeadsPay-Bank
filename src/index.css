@@ -4,6 +4,44 @@
   :root {
     --brand-green: #00e676;
     --brand-green-glow: rgba(0, 230, 118, 0.35);
+
+    /* Tokens do painel web novo (v3.1 §5 + v3.2 §D7.1) — tema claro */
+    --shell-bg: #f7f7f7;
+    --shell-surface: #ffffff;
+    --shell-surface-2: #f4f4f5;
+    --shell-text: #111111;
+    --shell-muted: #6b7280;
+    --shell-border: #e5e7eb;
+    --shell-lima: #c6ff4a;
+    --shell-black: #111827;
+    --shell-on-black: #ffffff;
+    --shell-orange: #f97316;
+    --shell-ok-bg: #dcfce7;
+    --shell-ok-text: #166534;
+    --shell-bad-bg: #fee2e2;
+    --shell-bad-text: #991b1b;
+    --shell-warn-bg: #fef9c3;
+    --shell-warn-text: #854d0e;
+  }
+
+  /* Tema escuro do shell (v3.2 §D7.1) — aplicado via data-theme no div raiz */
+  [data-theme='dark'] {
+    --shell-bg: #0e0f11;
+    --shell-surface: #18191d;
+    --shell-surface-2: #232428;
+    --shell-text: #f5f5f5;
+    --shell-muted: #9ca3af;
+    --shell-border: #2c2d32;
+    --shell-lima: #c6ff4a;
+    --shell-black: #f5f5f5;
+    --shell-on-black: #111111;
+    --shell-orange: #fb923c;
+    --shell-ok-bg: #14532d;
+    --shell-ok-text: #86efac;
+    --shell-bad-bg: #7f1d1d;
+    --shell-bad-text: #fca5a5;
+    --shell-warn-bg: #713f12;
+    --shell-warn-text: #fde68a;
   }
 
   body {

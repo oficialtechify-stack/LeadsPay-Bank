@@ -11,7 +11,6 @@ import {
   Sparkles,
   Barcode,
   ShieldCheck,
-  Headphones,
   Key,
   QrCode,
   Sliders,
@@ -34,7 +33,6 @@ interface DashboardViewProps {
   onOpenFinance: () => void;
   onOpenDevApi: () => void;
   onOpenSecurity: () => void;
-  onOpenSupport: () => void;
   /** Acesso novo (§4.1, DET-3): o Token só abria pela login; aqui entra em "Mais ações". */
   onOpenToken: () => void;
   onOpenAdminReview?: () => void;
@@ -74,7 +72,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenFinance,
   onOpenDevApi,
   onOpenSecurity,
-  onOpenSupport,
   onOpenToken,
   onOpenAdminReview,
   isAdmin,
@@ -245,7 +242,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <SectionTitle>Mais ações</SectionTitle>
         <div className="grid grid-cols-3 gap-3 mt-3">
           <ActionTile Icon={ShieldCheck} label="Segurança" tone="dark" onClick={onOpenSecurity} />
-          <ActionTile Icon={Headphones} label="Suporte" tone="blue" onClick={onOpenSupport} />
           <ActionTile Icon={Key} label="Token" tone="green" onClick={onOpenToken} />
           {isAdmin && onOpenAdminReview && (
             <ActionTile Icon={Sparkles} label="Admin KYC" tone="amber" onClick={onOpenAdminReview} />

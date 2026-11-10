@@ -23,7 +23,7 @@ interface CardsViewProps {
   cards: VirtualCard[];
   onToggleFreeze: (cardId: string) => void;
   onUpdateLimit: (cardId: string, newLimit: number) => void;
-  onCreateVirtualCard: (name: string, category: VirtualCard['category']) => void;
+  onCreateVirtualCard?: (name: string, category: VirtualCard['category']) => void;
   onRequestBiometric: (actionName: string, onVerified: () => void) => void;
 }
 
@@ -67,7 +67,7 @@ export const CardsView: React.FC<CardsViewProps> = ({
 
   const handleCreate = () => {
     if (!newCardName.trim()) return;
-    onCreateVirtualCard(newCardName.trim(), newCardCategory);
+    onCreateVirtualCard?.(newCardName.trim(), newCardCategory);
     setNewCardName('');
     setIsNewCardModalOpen(false);
   };

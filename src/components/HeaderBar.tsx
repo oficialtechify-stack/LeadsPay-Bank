@@ -2,7 +2,6 @@ import React from 'react';
 import {
   Eye,
   EyeOff,
-  Headphones,
   LogOut,
   Bell,
   QrCode,
@@ -32,7 +31,6 @@ interface HeaderBarProps {
   onToggleBalance: () => void;
   onOpenNotifications: () => void;
   onOpenPixReceive: () => void;
-  onOpenSupport: () => void;
   onLogout: () => void;
   onOpenAdminReview?: () => void;
 }
@@ -43,7 +41,6 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   onToggleBalance,
   onOpenNotifications,
   onOpenPixReceive,
-  onOpenSupport,
   onLogout,
   onOpenAdminReview
 }) => {
@@ -129,16 +126,6 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             className="rounded-full p-2.5"
           >
             <QrCode className="w-5 h-5 text-zinc-700" />
-          </button>
-
-          <button
-            type="button"
-            onClick={onOpenSupport}
-            aria-label="Suporte"
-            title="Suporte LeadsPay 24/7"
-            className="rounded-full p-2.5 hidden sm:block"
-          >
-            <Headphones className="w-5 h-5 text-zinc-700" />
           </button>
 
           <button

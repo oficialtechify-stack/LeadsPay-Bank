@@ -18,7 +18,9 @@ import { FinancialManagementView } from './components/FinancialManagementView';
 import { DeveloperApiView } from './components/DeveloperApiView';
 import { PixModal } from './components/PixModal';
 import { LeadsTapModal } from './components/LeadsTapModal';
-import { Support247Chat } from './components/Support247Chat';
+import { Shell } from './components/painel/Shell';
+import type { ShellUi } from './components/painel/types';
+import type { SyncState } from './services/firebaseBankService';
 import { SecurityCenterModal } from './components/SecurityCenterModal';
 import { BiometricAuthModal } from './components/BiometricAuthModal';
 import { TokenModal } from './components/TokenModal';
@@ -57,7 +59,6 @@ import {
   updateUserProfile as updateUserProfileInDb,
   createInitialUserProfile,
   createDefaultVirtualCard,
-  generateCardExpiry,
   getLocalUserProfile,
   getLocalCards,
   saveLocalUserProfile,
@@ -75,6 +76,24 @@ import {
   RegistrationDraft
 } from './services/firebaseBankService';
 
+/** Desktop do painel novo: ≥1024px (v3.1 §4). */
+function useIsDesktop(): boolean {
+  const [isDesktop, setIsDesktop] = useState(
+    typeof window !== 'undefined'
+      ? window.matchMedia('(min-width: 1024px)').matches
+      : false
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const onChange = () => setIsDesktop(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return isDesktop;
+}
+
+type ThemePref = 'light' | 'dark' | 'system';
+
 export default function App() {
   // Screen and route state: starts at the exact entry screen requested
   const [currentScreen, setCurrentScreen] = useState<'onboarding' | 'bank'>('onboarding');
@@ -83,6 +102,39 @@ export default function App() {
   // sobre o DashboardView; Vendas, Negócio e Moedas têm views próprias.
   const [route, setRoute] = useState<Route>({ name: 'conta' });
   const [pixInitialTab, setPixInitialTab] = useState<'send' | 'receive' | 'keys' | 'limits'>('send');
+  const isDesktop = useIsDesktop();
+  // Sincronização do Firestore (v3.2 §D7.5): loading até as 3 fontes
+  // entregarem ou errarem; error = primeira mensagem de erro.
+  const [syncState, setSyncState] = useState<SyncState>({ loading: true, error: null });
+  // Estado da UI do painel novo (v3.2 §D2) — dono é o Shell.
+  const [shellUi, setShellUi] = useState<ShellUi>({
+    pixDrawerOpen: false,
+    linkBioOpen: false,
+    ajudaOpen: false,
+    assistenteReturn: { name: 'conta' },
+    salesTab: 'calendar',
+    salesClientFilter: null,
+  });
+  // Tema do shell (v3.2 §D7.1): 'leadstap-theme' em localStorage;
+  // 'system' segue o matchMedia com listener.
+  const [themePref, setThemePref] = useState<ThemePref>(() => {
+    const saved = localStorage.getItem('leadstap-theme');
+    return saved === 'light' || saved === 'dark' || saved === 'system' ? saved : 'system';
+  });
+  const [effectiveTheme, setEffectiveTheme] = useState<'light' | 'dark'>('light');
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const apply = () =>
+      setEffectiveTheme(
+        themePref === 'system' ? (mq.matches ? 'dark' : 'light') : themePref
+      );
+    apply();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, [themePref]);
+  useEffect(() => {
+    localStorage.setItem('leadstap-theme', themePref);
+  }, [themePref]);
   const [isMobileFrame, setIsMobileFrame] = useState(false);
   const [showBalance, setShowBalance] = useState(true);
 
@@ -97,7 +149,6 @@ export default function App() {
   // Modals state
   const [isPixModalOpen, setIsPixModalOpen] = useState(false);
   const [isTapToPayOpen, setIsTapToPayOpen] = useState(false);
-  const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [isSecurityOpen, setIsSecurityOpen] = useState(false);
   const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
   const [isOpenAccountModalOpen, setIsOpenAccountModalOpen] = useState(false);
@@ -135,7 +186,8 @@ export default function App() {
   // Navegação por Route. 'pix' e 'tap' são modais no Bank: 'pix' abre o
   // PixModal (aba definida por pixInitialTab) sem trocar a rota; 'tap'
   // abre o LeadsTapModal a partir da aba Vendas (Q-nav1 = B).
-  const navigate = (next: Route) => {
+  const navigate = (next: Route, opts?: Partial<ShellUi>) => {
+    if (opts) setShellUi((prev) => ({ ...prev, ...opts }));
     if (next.name === 'pix') {
       setPixInitialTab('receive');
       setIsPixModalOpen(true);
@@ -147,6 +199,42 @@ export default function App() {
       return;
     }
     setRoute(next);
+  };
+
+  // Assinatura ÚNICA da conta (perfil + transações + cartões) — o ÚNICO
+  // carregador desses dados (são subcoleções, não campos do doc).
+  // Usada pelo enterBank, pelo ramo B do roteamento e pelo refresh
+  // manual (U7 "Atualizar página", v3.2 §D7.5).
+  const subscribeAccount = (uid: string) => {
+    if (accountUnsubscribeRef.current) {
+      accountUnsubscribeRef.current();
+      accountUnsubscribeRef.current = null;
+    }
+    accountUnsubscribeRef.current = subscribeToUserAccount(uid, {
+      onProfile: (updatedProfile) => {
+        setUserProfile(prev => ({
+          ...prev,
+          ...updatedProfile,
+          balance: Math.max(0, updatedProfile.balance || 0),
+          uid
+        }));
+      },
+      onTransactions: (updatedTxs) => setTransactions(updatedTxs),
+      onCards: (updatedCards) => {
+        if (updatedCards.length > 0) setCards(updatedCards);
+      },
+      onSyncState: (s) => setSyncState(s),
+    });
+  };
+
+  // Re-anexa as 3 inscrições da conta (U7 "Atualizar página", v3.2
+  // §D7.5): cancela e recria; o loading volta a true até o primeiro
+  // snapshot. NÃO é reload da página.
+  const refreshAccount = () => {
+    const uid = auth.currentUser?.uid || userProfile.uid;
+    if (!uid) return;
+    setSyncState({ loading: true, error: null });
+    subscribeAccount(uid);
   };
 
   // Rotina única de entrada no banco (§3.4, `enterBank`): usada pelo ramo A,
@@ -212,24 +300,7 @@ export default function App() {
 
     // Assinatura da conta — o ÚNICO carregador de perfil + transações +
     // cartões (são subcoleções, não campos do doc).
-    if (accountUnsubscribeRef.current) {
-      accountUnsubscribeRef.current();
-      accountUnsubscribeRef.current = null;
-    }
-    accountUnsubscribeRef.current = subscribeToUserAccount(uid, {
-      onProfile: (updatedProfile) => {
-        setUserProfile(prev => ({
-          ...prev,
-          ...updatedProfile,
-          balance: Math.max(0, updatedProfile.balance || 0),
-          uid
-        }));
-      },
-      onTransactions: (updatedTxs) => setTransactions(updatedTxs),
-      onCards: (updatedCards) => {
-        if (updatedCards.length > 0) setCards(updatedCards);
-      }
-    });
+    subscribeAccount(uid);
 
     // Regra de cartão (fecha IMP-6, corrigida pela revisão v3): one-shot
     // ANTES de decidir — o listener nunca reporta lista vazia. Só cria o
@@ -355,6 +426,9 @@ export default function App() {
         saveLocalCards(currentUser.uid, [adminCard]);
         setCards([adminCard]);
       }
+      // O ramo admin não assina o Firestore (nunca assinou): sem sync,
+      // o Shell não fica em loading para sempre.
+      setSyncState({ loading: false, error: null });
       setCurrentScreen('bank');
       return;
     }
@@ -422,21 +496,7 @@ export default function App() {
         clearRegistrationDraft();
         setUserProfile(profile);
 
-        if (accountUnsubscribeRef.current) accountUnsubscribeRef.current();
-        accountUnsubscribeRef.current = subscribeToUserAccount(uid, {
-          onProfile: (updatedProfile) => {
-            setUserProfile(prev => ({
-              ...prev,
-              ...updatedProfile,
-              balance: Math.max(0, updatedProfile.balance || 0),
-              uid
-            }));
-          },
-          onTransactions: (updatedTxs) => setTransactions(updatedTxs),
-          onCards: (updatedCards) => {
-            if (updatedCards.length > 0) setCards(updatedCards);
-          }
-        });
+        subscribeAccount(uid);
 
         setCurrentScreen('bank');
       } else if (existingApp) {
@@ -653,7 +713,9 @@ export default function App() {
     });
   };
 
-  // Card Freeze Toggle
+  // Card Freeze Toggle — OTIMISTA COM REVERSÃO (v3.1 §6): o estado local
+  // só muda depois que o saveCard confirma; em erro, o estado fica como
+  // estava (reversão) e aparece notificação de erro — sem toast de sucesso.
   const handleToggleFreeze = async (cardId: string) => {
     const currentUid = auth.currentUser?.uid || userProfile.uid;
     const targetCard = cards.find(c => c.id === cardId);
@@ -667,6 +729,15 @@ export default function App() {
         await saveCard(currentUid, updatedCard);
       } catch (err) {
         console.error('Failed to update card freeze in Firestore:', err);
+        setNotification({
+          id: Date.now().toString(),
+          title: nextState
+            ? 'Não foi possível bloquear o cartão.'
+            : 'Não foi possível desbloquear o cartão.',
+          message: 'Tente de novo.',
+          type: 'card'
+        });
+        return;
       }
     }
 
@@ -700,45 +771,6 @@ export default function App() {
       id: Date.now().toString(),
       title: 'Limite Atualizado',
       message: `Novo limite de R$ ${newLimit.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} definido.`,
-      type: 'card'
-    });
-  };
-
-  // Create Virtual Card
-  const handleCreateVirtualCard = async (name: string, category: VirtualCard['category']) => {
-    const currentUid = auth.currentUser?.uid || userProfile.uid;
-    const last4 = Math.floor(1000 + Math.random() * 9000);
-    const newCard: VirtualCard = {
-      id: 'card-' + Date.now(),
-      name,
-      type: 'virtual',
-      cardNumber: `5482 •••• •••• ${last4}`,
-      cardHolder: userProfile.name.toUpperCase(),
-      expiry: generateCardExpiry(),
-      cvv: Math.floor(100 + Math.random() * 900).toString(),
-      cvvExpiresInSeconds: 86400,
-      isFrozen: false,
-      limit: 5000.00,
-      usedLimit: 0,
-      brand: 'mastercard',
-      color: 'linear-gradient(135deg, #0f1c13 0%, #172c1e 70%, #00e676 220%)',
-      category
-    };
-
-    if (currentUid) {
-      try {
-        await saveCard(currentUid, newCard);
-      } catch (err) {
-        console.error('Failed to save virtual card to Firestore:', err);
-      }
-    }
-
-    setCards(prev => [newCard, ...prev]);
-    soundEffects.playPixSuccess();
-    setNotification({
-      id: Date.now().toString(),
-      title: 'Cartão Virtual Criado!',
-      message: `${name} gerado instantaneamente com CVV dinâmico.`,
       type: 'card'
     });
   };
@@ -846,8 +878,16 @@ export default function App() {
     setRoute({ name: 'conta' });
   };
 
+  // Trava de conta não aprovada (v3.2 §D2): o Shell só é montado quando a
+  // conta está aprovada (status 'approved' ou legado sem carimbo e sem
+  // aplicação pendente). Nos demais estados, o layout mobile antigo segue
+  // com o fluxo existente (PendingApprovalModal).
+  const isApprovedAccount =
+    userProfile.status === 'approved' ||
+    (userProfile.status === undefined && !pendingApp);
+
   return (
-    <div className="min-h-screen bg-white text-zinc-950 flex flex-col items-center justify-start antialiased selection:bg-[#00e676] selection:text-black">
+    <div data-theme={effectiveTheme} className="min-h-screen bg-white text-zinc-950 flex flex-col items-center justify-start antialiased selection:bg-[#00e676] selection:text-black">
       {/* Push Notification Toast */}
       <NotificationToast
         notification={notification}
@@ -872,11 +912,44 @@ export default function App() {
                 setCurrentScreen('bank');
                 setIsPixModalOpen(true);
               }}
-              onOpenSupport={() => setIsSupportOpen(true)}
               onOpenToken={() => setIsTokenModalOpen(true)}
             />
           </div>
         </div>
+      ) : isDesktop && isApprovedAccount ? (
+        /* Painel web novo (v3.1 §4 + v3.2 §D2): só desktop ≥1024px e conta
+           aprovada. Nos demais casos, o layout mobile antigo abaixo. */
+        <Shell
+          route={route}
+          userProfile={userProfile}
+          transactions={transactions}
+          cards={cards}
+          showBalance={showBalance}
+          onToggleBalance={() => setShowBalance(!showBalance)}
+          navigate={navigate}
+          onLogout={handleLogout}
+          onOpenAdminReview={() => setIsAdminReviewModalOpen(true)}
+          isAdmin={userProfile.email?.toLowerCase().trim() === ADMIN_EMAIL.toLowerCase()}
+          syncState={syncState}
+          shellUi={shellUi}
+          setShellUi={(patch) => setShellUi((prev) => ({ ...prev, ...patch }))}
+          onOpenPixModal={(tab) => {
+            setPixInitialTab(tab);
+            setIsPixModalOpen(true);
+          }}
+          onOpenTapModal={() => setIsTapToPayOpen(true)}
+          onOpenSecurityModal={() => setIsSecurityOpen(true)}
+          onSavePixLimits={handleSavePixLimits}
+          onToggleFreeze={handleToggleFreeze}
+          onUpdateLimit={handleUpdateLimit}
+          onRefresh={refreshAccount}
+          apiKeys={apiKeys}
+          webhooks={webhooks}
+          onGenerateKey={handleGenerateKey}
+          onAddWebhook={handleAddWebhook}
+          themePref={themePref}
+          onThemePrefChange={setThemePref}
+        />
       ) : (
         /* Screen 2: Responsive Banking Experience */
         <div className={`w-full transition-all duration-300 flex flex-col min-h-screen ${
@@ -902,7 +975,6 @@ export default function App() {
               setPixInitialTab('receive');
               setIsPixModalOpen(true);
             }}
-            onOpenSupport={() => setIsSupportOpen(true)}
             onLogout={handleLogout}
             onOpenAdminReview={() => setIsAdminReviewModalOpen(true)}
           />
@@ -951,7 +1023,6 @@ export default function App() {
                     onOpenFinance={() => navigate({ name: 'gestao' })}
                     onOpenDevApi={() => navigate({ name: 'api' })}
                     onOpenSecurity={() => setIsSecurityOpen(true)}
-                    onOpenSupport={() => setIsSupportOpen(true)}
                     onOpenToken={() => setIsTokenModalOpen(true)}
                     onOpenAdminReview={() => setIsAdminReviewModalOpen(true)}
                     isAdmin={userProfile.email?.toLowerCase().trim() === ADMIN_EMAIL.toLowerCase()}
@@ -1039,7 +1110,6 @@ export default function App() {
                     cards={cards}
                     onToggleFreeze={handleToggleFreeze}
                     onUpdateLimit={handleUpdateLimit}
-                    onCreateVirtualCard={handleCreateVirtualCard}
                     onRequestBiometric={requestBiometric}
                   />
                 </motion.div>
@@ -1059,7 +1129,6 @@ export default function App() {
                     onOpenFinance={() => navigate({ name: 'gestao' })}
                     onOpenDevApi={() => navigate({ name: 'api' })}
                     onOpenSecurity={() => setIsSecurityOpen(true)}
-                    onOpenSupport={() => setIsSupportOpen(true)}
                     onOpenPix={() => {
                       setPixInitialTab('send');
                       setIsPixModalOpen(true);
@@ -1168,13 +1237,7 @@ export default function App() {
         onNewTransaction={handleNewTransaction}
       />
 
-      {/* 3. 24/7 Live Support Chat */}
-      <Support247Chat
-        isOpen={isSupportOpen}
-        onClose={() => setIsSupportOpen(false)}
-      />
-
-      {/* 4. Security Center & Knox Protection */}
+      {/* 3. Security Center & Knox Protection */}
       <SecurityCenterModal
         isOpen={isSecurityOpen}
         onClose={() => setIsSecurityOpen(false)}
