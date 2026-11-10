@@ -22,6 +22,10 @@ interface AccessAccountModalProps {
   // DET-1: mensagem inicial do modal (gate do `onApprovedLogin`, §3.5, e
   // atalho "Área Pix", §3.6). Alimenta o `errorMessage` na abertura.
   initialMessage?: string;
+  // Roteamento direto pós-login (§3.4): o `onAuthStateChanged` não dispara
+  // quando a sessão já era do mesmo usuário — sem este callback o login
+  // manual só fecharia o modal e a tela ficaria na home.
+  onManualSignInSuccess?: () => void;
 }
 
 // Tabela de erros do login manual (§3.2): com a proteção contra enumeração
@@ -52,7 +56,8 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
   onClose,
   onGoogleSignIn,
   onOpenRegister,
-  initialMessage
+  initialMessage,
+  onManualSignInSuccess
 }) => {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -144,8 +149,11 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
     try {
       await signInWithEmailAndPassword(auth, cleanId, password);
       setIsManualLoading(false);
-      // 4. Após o sign-in: fechar o modal — SÓ `onClose()` (DET-7). Quem
-      // decide para onde o usuário vai é o `onAuthStateChanged` (§3.4).
+      // 4. Após o sign-in: rotear direto (§3.4). O `onAuthStateChanged`
+      // NÃO dispara quando a sessão já era do mesmo usuário (ex.: logo
+      // após o cadastro, ou reload com sessão ativa) — sem isso o modal
+      // só fecha e a tela fica na home (DET-7 não basta sozinho).
+      onManualSignInSuccess?.();
       onClose();
     } catch (err: unknown) {
       setIsManualLoading(false);

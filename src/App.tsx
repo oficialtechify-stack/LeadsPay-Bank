@@ -46,6 +46,7 @@ import {
   updateDoc,
   db
 } from './firebase/config';
+import type { User } from 'firebase/auth';
 import {
   signInWithGoogle,
   logOut,
@@ -115,6 +116,9 @@ export default function App() {
   // poderem cancelá-las — e o cleanup do efeito cancelar as duas.
   const accountUnsubscribeRef = useRef<(() => void) | null>(null);
   const applicationUnsubscribeRef = useRef<(() => void) | null>(null);
+  // Guarda de roteamento duplo (§3.4): o roteamento do mesmo usuário não
+  // roda duas vezes em paralelo (listener + login manual).
+  const routingUidRef = useRef<string | null>(null);
 
   // Biometric gate modal
   const [biometricConfig, setBiometricConfig] = useState<{
@@ -307,6 +311,212 @@ export default function App() {
     }
   };
 
+  // Roteamento pós-login (§3.4): a decisão A/B/C para um usuário
+  // assinado. Vivia dentro do `onAuthStateChanged`; virou função própria
+  // porque o listener NÃO dispara quando a sessão já era do mesmo
+  // usuário — `signInWithEmailAndPassword` com a sessão ativa não muda o
+  // estado de autenticação, então o login manual precisa chamar a decisão
+  // direto (senão o modal só fecha e a tela fica na home). A guarda
+  // `routingUidRef` impede roteamento duplo do mesmo usuário (listener +
+  // chamada manual na mesma entrada).
+  const routeSignedInUser = async (currentUser: User) => {
+    if (routingUidRef.current === currentUser.uid) return;
+    routingUidRef.current = currentUser.uid;
+    try {
+    const userEmail = currentUser.email?.toLowerCase().trim() || '';
+    const isAdmin = userEmail === ADMIN_EMAIL.toLowerCase();
+
+    // 1. Super Admin (rickmarketing81@gmail.com) has instant access to administration and dashboard
+    if (isAdmin) {
+      let profile = getLocalUserProfile(currentUser.uid);
+      if (profile) {
+        profile.balance = Math.max(0, profile.balance || 0);
+      }
+      if (!profile) {
+        profile = createInitialUserProfile({
+          uid: currentUser.uid,
+          displayName: currentUser.displayName || 'Administrador LeadsPay',
+          email: currentUser.email || ADMIN_EMAIL,
+          photoURL: currentUser.photoURL
+        });
+        saveLocalUserProfile(currentUser.uid, profile);
+      }
+      clearRegistrationDraft();
+      setUserProfile(profile);
+      // §7.1 caminho 3: o ramo admin nunca assinava o Firestore, então
+      // os cards ficavam no inicial semeado. O cartão do admin vem de
+      // createDefaultVirtualCard com o nome real (ou do local, se já
+      // existir) — nunca do estado inicial.
+      const adminLocalCards = getLocalCards(currentUser.uid);
+      if (adminLocalCards.length > 0) {
+        setCards(adminLocalCards);
+      } else {
+        const adminCard = createDefaultVirtualCard(currentUser.uid, profile.name);
+        saveLocalCards(currentUser.uid, [adminCard]);
+        setCards([adminCard]);
+      }
+      setCurrentScreen('bank');
+      return;
+    }
+
+    const uid = currentUser.uid;
+
+    // Leituras do servidor, independentes (nunca um `Promise.all` que
+    // descarta os dois resultados quando um rejeita).
+    const readServer = async <T,>(
+      label: string,
+      fn: () => Promise<T | null>
+    ): Promise<{ value: T | null; failed: boolean }> => {
+      try {
+        return { value: await fn(), failed: false };
+      } catch (err) {
+        const code = (err as { code?: string })?.code || '';
+        if (code === 'permission-denied') {
+          console.error(
+            `[Bank] permission-denied ao ler ${label} — conferir a publicação das regras (§4 item 5).`,
+            err
+          );
+        } else if (code === 'unavailable' || code === 'network-request-failed') {
+          console.warn(`[Bank] sem rede ao ler ${label} — usando dados locais.`, err);
+        } else {
+          console.error(
+            `[Bank] erro ao ler ${label} (código ${code || 'desconhecido'}) — usando dados locais.`,
+            err
+          );
+        }
+        return { value: null, failed: true };
+      }
+    };
+
+    const appRead = await readServer(
+      `account_applications/${uid}`,
+      () => getServerApplication(uid)
+    );
+    const profileRead = await readServer(
+      `users/${uid}`,
+      () => getServerProfile(uid)
+    );
+
+    // Passo 6 — fallback local: qualquer leitura falhou. Ramos A/B/C
+    // exatamente como hoje, com os dados locais.
+    if (appRead.failed || profileRead.failed) {
+      console.warn('[Bank] decisão de entrada por dados locais (servidor sem resposta).');
+      const existingApp = getLocalUserApplication(uid) ||
+                          (userEmail ? findApplicationByEmailOrCpf(userEmail) : null);
+      const existingProfile = getLocalUserProfile(uid);
+
+      // A. Aprovado pelo administrador — ou conta existente de antes do
+      // sistema de aprovação (sem carimbo de status): perfil existente
+      // vale como conta válida e é carimbado na hora, em vez de cair no
+      // questionário de criar conta.
+      const approvedProfile = existingProfile ? markLocalProfileApproved(existingProfile) : null;
+      if (existingApp?.status === 'approved' || approvedProfile) {
+        let profile = approvedProfile || createInitialUserProfile({
+          uid,
+          displayName: existingApp?.fullName || currentUser.displayName || 'Cliente LeadsPay',
+          email: currentUser.email || existingApp?.email || '',
+          photoURL: existingApp?.selfiePhoto || currentUser.photoURL
+        });
+        profile.balance = Math.max(0, profile.balance || 0);
+        profile.status = 'approved';
+        clearRegistrationDraft();
+        setUserProfile(profile);
+
+        if (accountUnsubscribeRef.current) accountUnsubscribeRef.current();
+        accountUnsubscribeRef.current = subscribeToUserAccount(uid, {
+          onProfile: (updatedProfile) => {
+            setUserProfile(prev => ({
+              ...prev,
+              ...updatedProfile,
+              balance: Math.max(0, updatedProfile.balance || 0),
+              uid
+            }));
+          },
+          onTransactions: (updatedTxs) => setTransactions(updatedTxs),
+          onCards: (updatedCards) => {
+            if (updatedCards.length > 0) setCards(updatedCards);
+          }
+        });
+
+        setCurrentScreen('bank');
+      } else if (existingApp) {
+        // B. Proposal exists and is pending or needs revision: Keep on entry screen and show pending notice!
+        setCurrentScreen('onboarding');
+        setPendingApp(existingApp);
+        setIsPendingApprovalModalOpen(true);
+      } else {
+        // C. User has NO account: send to open account flow with draft pre-filled!
+        setCurrentScreen('onboarding');
+        mergeGooglePrefillIntoDraft(currentUser, userEmail);
+        setOpenAccountPrefill({ email: userEmail });
+        setIsOpenAccountModalOpen(true);
+      }
+      return;
+    }
+
+    const serverApp = appRead.value;
+    const serverProfile = profileRead.value;
+
+    // Passo 2 — Aprovado (ramo A): proposta aprovada OU perfil aprovado.
+    if (serverApp?.status === 'approved' || serverProfile?.status === 'approved') {
+      await enterBank(uid, serverApp, serverProfile);
+      return;
+    }
+
+    // Passo 3 — Legado pré-KYC (ramo A): perfil no servidor, sem
+    // proposta, sem carimbo. É a conta de setembro.
+    if (serverProfile && !serverApp && serverProfile.status === undefined) {
+      await enterBank(uid, null, serverProfile);
+      return;
+    }
+
+    // Passo 4 — Pendente / em ajuste (ramo B): modal de aguardo COM a
+    // proposta do servidor, e a assinatura que acompanha transições.
+    if (serverApp && (serverApp.status === 'pending' || serverApp.status === 'needs_revision')) {
+      setCurrentScreen('onboarding');
+      setPendingApp(serverApp);
+      setIsPendingApprovalModalOpen(true);
+      subscribeApplication(uid);
+      return;
+    }
+
+    // Passo 7 — Rejeitada: estado de rejeição (§3.9), não o modal de
+    // aguardo "em análise". Assinatura ativa, como no passo 4.
+    if (serverApp?.status === 'rejected') {
+      setCurrentScreen('onboarding');
+      setPendingApp(serverApp);
+      setIsPendingApprovalModalOpen(true);
+      subscribeApplication(uid);
+      return;
+    }
+
+    // Passo 5 — Sem conta (ramo C): abre o cadastro, sem
+    // `clearRegistrationDraft()` — o rascunho é mesclado (§3.1).
+    if (!serverApp && !serverProfile) {
+      setCurrentScreen('onboarding');
+      mergeGooglePrefillIntoDraft(currentUser, userEmail);
+      setOpenAccountPrefill({ email: userEmail });
+      setIsOpenAccountModalOpen(true);
+      return;
+    }
+
+    // Passo 8 — Ramo padrão: perfil no servidor com status diferente de
+    // 'approved' e de indefinido (e sem proposta). Hoje inalcançável —
+    // nenhum escritor grava outro status em `users/{uid}`. O cadastro é
+    // o caminho seguro: nunca entra no banco sem aprovação.
+    console.warn(
+      '[Bank] perfil no servidor com status inesperado e sem proposta — abrindo cadastro.',
+      serverProfile?.status
+    );
+    setCurrentScreen('onboarding');
+    mergeGooglePrefillIntoDraft(currentUser, userEmail);
+    setOpenAccountPrefill({ email: userEmail });
+    setIsOpenAccountModalOpen(true);
+    } finally {
+      routingUidRef.current = null;
+    }
+  };
+
   // Real-time Firebase Authentication & per-user individual Firestore synchronization
   // Fonte da verdade é o SERVIDOR (§3.4): as duas leituras one-shot são
   // feitas antes dos ramos A/B/C, cada uma com catch separado por código de
@@ -318,195 +528,7 @@ export default function App() {
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
-        const userEmail = currentUser.email?.toLowerCase().trim() || '';
-        const isAdmin = userEmail === ADMIN_EMAIL.toLowerCase();
-
-        // 1. Super Admin (rickmarketing81@gmail.com) has instant access to administration and dashboard
-        if (isAdmin) {
-          let profile = getLocalUserProfile(currentUser.uid);
-          if (profile) {
-            profile.balance = Math.max(0, profile.balance || 0);
-          }
-          if (!profile) {
-            profile = createInitialUserProfile({
-              uid: currentUser.uid,
-              displayName: currentUser.displayName || 'Administrador LeadsPay',
-              email: currentUser.email || ADMIN_EMAIL,
-              photoURL: currentUser.photoURL
-            });
-            saveLocalUserProfile(currentUser.uid, profile);
-          }
-          clearRegistrationDraft();
-          setUserProfile(profile);
-          // §7.1 caminho 3: o ramo admin nunca assinava o Firestore, então
-          // os cards ficavam no inicial semeado. O cartão do admin vem de
-          // createDefaultVirtualCard com o nome real (ou do local, se já
-          // existir) — nunca do estado inicial.
-          const adminLocalCards = getLocalCards(currentUser.uid);
-          if (adminLocalCards.length > 0) {
-            setCards(adminLocalCards);
-          } else {
-            const adminCard = createDefaultVirtualCard(currentUser.uid, profile.name);
-            saveLocalCards(currentUser.uid, [adminCard]);
-            setCards([adminCard]);
-          }
-          setCurrentScreen('bank');
-          return;
-        }
-
-        const uid = currentUser.uid;
-
-        // Leituras do servidor, independentes (nunca um `Promise.all` que
-        // descarta os dois resultados quando um rejeita).
-        const readServer = async <T,>(
-          label: string,
-          fn: () => Promise<T | null>
-        ): Promise<{ value: T | null; failed: boolean }> => {
-          try {
-            return { value: await fn(), failed: false };
-          } catch (err) {
-            const code = (err as { code?: string })?.code || '';
-            if (code === 'permission-denied') {
-              console.error(
-                `[Bank] permission-denied ao ler ${label} — conferir a publicação das regras (§4 item 5).`,
-                err
-              );
-            } else if (code === 'unavailable' || code === 'network-request-failed') {
-              console.warn(`[Bank] sem rede ao ler ${label} — usando dados locais.`, err);
-            } else {
-              console.error(
-                `[Bank] erro ao ler ${label} (código ${code || 'desconhecido'}) — usando dados locais.`,
-                err
-              );
-            }
-            return { value: null, failed: true };
-          }
-        };
-
-        const appRead = await readServer(
-          `account_applications/${uid}`,
-          () => getServerApplication(uid)
-        );
-        const profileRead = await readServer(
-          `users/${uid}`,
-          () => getServerProfile(uid)
-        );
-
-        // Passo 6 — fallback local: qualquer leitura falhou. Ramos A/B/C
-        // exatamente como hoje, com os dados locais.
-        if (appRead.failed || profileRead.failed) {
-          console.warn('[Bank] decisão de entrada por dados locais (servidor sem resposta).');
-          const existingApp = getLocalUserApplication(uid) ||
-                              (userEmail ? findApplicationByEmailOrCpf(userEmail) : null);
-          const existingProfile = getLocalUserProfile(uid);
-
-          // A. Aprovado pelo administrador — ou conta existente de antes do
-          // sistema de aprovação (sem carimbo de status): perfil existente
-          // vale como conta válida e é carimbado na hora, em vez de cair no
-          // questionário de criar conta.
-          const approvedProfile = existingProfile ? markLocalProfileApproved(existingProfile) : null;
-          if (existingApp?.status === 'approved' || approvedProfile) {
-            let profile = approvedProfile || createInitialUserProfile({
-              uid,
-              displayName: existingApp?.fullName || currentUser.displayName || 'Cliente LeadsPay',
-              email: currentUser.email || existingApp?.email || '',
-              photoURL: existingApp?.selfiePhoto || currentUser.photoURL
-            });
-            profile.balance = Math.max(0, profile.balance || 0);
-            profile.status = 'approved';
-            clearRegistrationDraft();
-            setUserProfile(profile);
-
-            if (accountUnsubscribeRef.current) accountUnsubscribeRef.current();
-            accountUnsubscribeRef.current = subscribeToUserAccount(uid, {
-              onProfile: (updatedProfile) => {
-                setUserProfile(prev => ({
-                  ...prev,
-                  ...updatedProfile,
-                  balance: Math.max(0, updatedProfile.balance || 0),
-                  uid
-                }));
-              },
-              onTransactions: (updatedTxs) => setTransactions(updatedTxs),
-              onCards: (updatedCards) => {
-                if (updatedCards.length > 0) setCards(updatedCards);
-              }
-            });
-
-            setCurrentScreen('bank');
-          } else if (existingApp) {
-            // B. Proposal exists and is pending or needs revision: Keep on entry screen and show pending notice!
-            setCurrentScreen('onboarding');
-            setPendingApp(existingApp);
-            setIsPendingApprovalModalOpen(true);
-          } else {
-            // C. User has NO account: send to open account flow with draft pre-filled!
-            setCurrentScreen('onboarding');
-            mergeGooglePrefillIntoDraft(currentUser, userEmail);
-            setOpenAccountPrefill({ email: userEmail });
-            setIsOpenAccountModalOpen(true);
-          }
-          return;
-        }
-
-        const serverApp = appRead.value;
-        const serverProfile = profileRead.value;
-
-        // Passo 2 — Aprovado (ramo A): proposta aprovada OU perfil aprovado.
-        if (serverApp?.status === 'approved' || serverProfile?.status === 'approved') {
-          await enterBank(uid, serverApp, serverProfile);
-          return;
-        }
-
-        // Passo 3 — Legado pré-KYC (ramo A): perfil no servidor, sem
-        // proposta, sem carimbo. É a conta de setembro.
-        if (serverProfile && !serverApp && serverProfile.status === undefined) {
-          await enterBank(uid, null, serverProfile);
-          return;
-        }
-
-        // Passo 4 — Pendente / em ajuste (ramo B): modal de aguardo COM a
-        // proposta do servidor, e a assinatura que acompanha transições.
-        if (serverApp && (serverApp.status === 'pending' || serverApp.status === 'needs_revision')) {
-          setCurrentScreen('onboarding');
-          setPendingApp(serverApp);
-          setIsPendingApprovalModalOpen(true);
-          subscribeApplication(uid);
-          return;
-        }
-
-        // Passo 7 — Rejeitada: estado de rejeição (§3.9), não o modal de
-        // aguardo "em análise". Assinatura ativa, como no passo 4.
-        if (serverApp?.status === 'rejected') {
-          setCurrentScreen('onboarding');
-          setPendingApp(serverApp);
-          setIsPendingApprovalModalOpen(true);
-          subscribeApplication(uid);
-          return;
-        }
-
-        // Passo 5 — Sem conta (ramo C): abre o cadastro, sem
-        // `clearRegistrationDraft()` — o rascunho é mesclado (§3.1).
-        if (!serverApp && !serverProfile) {
-          setCurrentScreen('onboarding');
-          mergeGooglePrefillIntoDraft(currentUser, userEmail);
-          setOpenAccountPrefill({ email: userEmail });
-          setIsOpenAccountModalOpen(true);
-          return;
-        }
-
-        // Passo 8 — Ramo padrão: perfil no servidor com status diferente de
-        // 'approved' e de indefinido (e sem proposta). Hoje inalcançável —
-        // nenhum escritor grava outro status em `users/{uid}`. O cadastro é
-        // o caminho seguro: nunca entra no banco sem aprovação.
-        console.warn(
-          '[Bank] perfil no servidor com status inesperado e sem proposta — abrindo cadastro.',
-          serverProfile?.status
-        );
-        setCurrentScreen('onboarding');
-        mergeGooglePrefillIntoDraft(currentUser, userEmail);
-        setOpenAccountPrefill({ email: userEmail });
-        setIsOpenAccountModalOpen(true);
+        void routeSignedInUser(currentUser);
       } else {
         if (accountUnsubscribeRef.current) {
           accountUnsubscribeRef.current();
@@ -1198,6 +1220,10 @@ export default function App() {
         }}
         onGoogleSignIn={handleGoogleSignIn}
         initialMessage={accessMessage ?? undefined}
+        onManualSignInSuccess={() => {
+          const u = auth.currentUser;
+          if (u) void routeSignedInUser(u);
+        }}
         onOpenRegister={(prefill) => {
           setOpenAccountPrefill(prefill);
           setIsAccessAccountModalOpen(false);
