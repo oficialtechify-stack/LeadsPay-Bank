@@ -570,9 +570,7 @@ export async function submitAccountApplication(
     userId: data.userId,
     status: 'pending',
     createdAt: now,
-    updatedAt: now,
-    revisionNotes: undefined,
-    requestedRevisions: undefined
+    updatedAt: now
   };
 
   // 1. Update local storage immediately
