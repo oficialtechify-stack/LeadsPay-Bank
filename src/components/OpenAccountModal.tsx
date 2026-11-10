@@ -425,9 +425,22 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
   // Handle final submission to Admin
   const handleFinalSubmit = async () => {
     setErrorMessage(null);
+
+    // Sem login com o Google a proposta NUNCA chega ao servidor: as regras
+    // do Firestore negam a escrita de convidado e o erro era engolido,
+    // exibindo sucesso falso. Exige o login antes de enviar — o rascunho
+    // do formulário já está auto-salvo, então voltar p/ a etapa 1 não
+    // perde nada.
+    if (!auth.currentUser) {
+      setErrorMessage('Para enviar sua proposta, entre com o Google primeiro — sem login ela não chega ao servidor e ninguém vê sua proposta.');
+      setStep(1);
+      setShowFieldsDirectly(false);
+      return;
+    }
+
     setIsSubmitting(true);
 
-    const userId = auth.currentUser?.uid || `guest-${Date.now()}`;
+    const userId = auth.currentUser.uid;
     const address: UserAddress = {
       cep,
       street,
@@ -468,7 +481,13 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
     } catch (err: unknown) {
       console.error('Application submit error:', err);
       setIsSubmitting(false);
-      setErrorMessage('Ocorreu um erro ao enviar sua proposta. Tente novamente.');
+      // O erro lançado por submitAccountApplication já diz o motivo
+      // (ex.: falha de sincronização com o servidor) — mostra ele em vez
+      // de um erro genérico, e nunca finge que o envio deu certo.
+      const message = err instanceof Error && err.message
+        ? err.message
+        : 'Ocorreu um erro ao enviar sua proposta. Tente novamente.';
+      setErrorMessage(message);
     }
   };
 

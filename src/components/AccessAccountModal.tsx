@@ -19,7 +19,9 @@ import {
   findUserProfileByEmailOrCpf,
   getLocalUserApplication,
   ADMIN_EMAIL,
-  saveRegistrationDraft
+  saveRegistrationDraft,
+  clearRegistrationDraft,
+  markLocalProfileApproved
 } from '../services/firebaseBankService';
 import { auth } from '../firebase/config';
 
@@ -60,6 +62,7 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
 
       // 1. If admin, grant direct access
       if (userEmail === ADMIN_EMAIL.toLowerCase()) {
+        clearRegistrationDraft();
         setIsSuccess(true);
         soundEffects.playPixSuccess();
         setTimeout(() => {
@@ -79,9 +82,10 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
         setIsGoogleLoading(false);
         onClose();
         if (app.status === 'approved') {
+          clearRegistrationDraft();
           soundEffects.playPixSuccess();
           const profile = findUserProfileByEmailOrCpf(userEmail) || findUserProfileByEmailOrCpf(app.cpf);
-          onManualAccess(profile || undefined);
+          onManualAccess(profile ? markLocalProfileApproved(profile) : undefined);
         } else {
           // Status is 'pending' or 'needs_revision': Show pending approval screen!
           onShowPendingApproval(app);
@@ -89,16 +93,20 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
         return;
       }
 
-      // 3. Search for existing user profile
+      // 3. Search for existing user profile — conta criada antes do sistema de
+      // aprovação não tem carimbo de status; perfil existente vale mesmo sem
+      // ele (carimba como aprovado na hora, em vez de mandar p/ o cadastro).
       const existingProfile = findUserProfileByEmailOrCpf(userEmail);
-      if (existingProfile && existingProfile.status === 'approved') {
+      if (existingProfile) {
+        clearRegistrationDraft();
+        const approvedProfile = markLocalProfileApproved(existingProfile);
         setIsSuccess(true);
         soundEffects.playPixSuccess();
         setTimeout(() => {
           setIsSuccess(false);
           setIsGoogleLoading(false);
           onClose();
-          onManualAccess(existingProfile);
+          onManualAccess(approvedProfile);
         }, 700);
         return;
       }
@@ -108,6 +116,10 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
       setIsGoogleLoading(false);
       onClose();
 
+      // Limpa o rascunho velho ANTES de pré-preencher: sem isso o merge do
+      // saveRegistrationDraft ressuscita os dados da tentativa anterior de
+      // criar conta e o questionário abre com a conta errada.
+      clearRegistrationDraft();
       // Pre-save Google details to draft
       saveRegistrationDraft({
         fullName: currentUser?.displayName || '',
@@ -137,6 +149,7 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
 
     // 1. Admin login check
     if (cleanLower === ADMIN_EMAIL.toLowerCase()) {
+      clearRegistrationDraft();
       setIsSuccess(true);
       soundEffects.playPixSuccess();
       setTimeout(() => {
@@ -151,6 +164,7 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
     const app = findApplicationByEmailOrCpf(cleanId);
     if (app) {
       if (app.status === 'approved') {
+        clearRegistrationDraft();
         setIsSuccess(true);
         soundEffects.playPixSuccess();
         setTimeout(() => {
@@ -166,15 +180,19 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
       return;
     }
 
-    // 3. Search for existing user profile
+    // 3. Search for existing user profile — conta criada antes do sistema de
+    // aprovação não tem carimbo de status; perfil existente vale mesmo sem
+    // ele (carimba como aprovado na hora, em vez de mandar p/ o cadastro).
     const existingProfile = findUserProfileByEmailOrCpf(cleanId);
-    if (existingProfile && existingProfile.status === 'approved') {
+    if (existingProfile) {
+      clearRegistrationDraft();
+      const approvedProfile = markLocalProfileApproved(existingProfile);
       setIsSuccess(true);
       soundEffects.playPixSuccess();
       setTimeout(() => {
         setIsSuccess(false);
         onClose();
-        onManualAccess(existingProfile);
+        onManualAccess(approvedProfile);
       }, 700);
       return;
     }
@@ -184,6 +202,10 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
     const isEmail = cleanId.includes('@');
     const isCpf = cleanId.replace(/\D/g, '').length >= 11;
 
+    // Limpa o rascunho velho ANTES de pré-preencher: sem isso o merge do
+    // saveRegistrationDraft ressuscita os dados da tentativa anterior de
+    // criar conta e o questionário abre com a conta errada.
+    clearRegistrationDraft();
     saveRegistrationDraft({
       email: isEmail ? cleanId : '',
       cpf: isCpf ? cleanId : ''

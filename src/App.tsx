@@ -62,8 +62,11 @@ import {
   saveLocalCards,
   ADMIN_EMAIL,
   findApplicationByEmailOrCpf,
+  findUserProfileByEmailOrCpf,
   getLocalUserApplication,
-  saveRegistrationDraft
+  saveRegistrationDraft,
+  clearRegistrationDraft,
+  markLocalProfileApproved
 } from './services/firebaseBankService';
 
 export default function App() {
@@ -152,6 +155,7 @@ export default function App() {
             });
             saveLocalUserProfile(currentUser.uid, profile);
           }
+          clearRegistrationDraft();
           setUserProfile(profile);
           // §7.1 caminho 3: o ramo admin nunca assinava o Firestore, então
           // os cards ficavam no inicial semeado. O cartão do admin vem de
@@ -174,9 +178,13 @@ export default function App() {
                             (userEmail ? findApplicationByEmailOrCpf(userEmail) : null);
         const existingProfile = getLocalUserProfile(currentUser.uid);
 
-        // A. Is approved by administrator
-        if (existingApp?.status === 'approved' || existingProfile?.status === 'approved') {
-          let profile = existingProfile || createInitialUserProfile({
+        // A. Aprovado pelo administrador — ou conta existente de antes do
+        // sistema de aprovação (sem carimbo de status): perfil existente
+        // vale como conta válida e é carimbado na hora, em vez de cair no
+        // questionário de criar conta.
+        const approvedProfile = existingProfile ? markLocalProfileApproved(existingProfile) : null;
+        if (existingApp?.status === 'approved' || approvedProfile) {
+          let profile = approvedProfile || createInitialUserProfile({
             uid: currentUser.uid,
             displayName: existingApp?.fullName || currentUser.displayName || 'Cliente LeadsPay',
             email: currentUser.email || existingApp?.email || '',
@@ -184,6 +192,7 @@ export default function App() {
           });
           profile.balance = Math.max(0, profile.balance || 0);
           profile.status = 'approved';
+          clearRegistrationDraft();
           setUserProfile(profile);
 
           if (unsubscribeFirestore) unsubscribeFirestore();
@@ -269,6 +278,7 @@ export default function App() {
           });
           saveLocalUserProfile(user.uid, adminProf);
         }
+        clearRegistrationDraft();
         setUserProfile(adminProf);
         // §7.1 caminho 3 (mesmo tratamento do ramo admin do onAuthStateChanged).
         const adminLocalCards = getLocalCards(user.uid);
@@ -291,9 +301,10 @@ export default function App() {
 
       if (app) {
         if (app.status === 'approved') {
+          clearRegistrationDraft();
           const profile = getLocalUserProfile(user.uid) || getLocalUserProfile(app.userId);
           if (profile) {
-            setUserProfile(profile);
+            setUserProfile(markLocalProfileApproved(profile));
             setCurrentScreen('bank');
             setRoute({ name: 'conta' });
             soundEffects.playPixSuccess();
@@ -303,8 +314,21 @@ export default function App() {
           setPendingApp(app);
           setIsPendingApprovalModalOpen(true);
         }
+      } else if (getLocalUserProfile(user.uid) || (userEmail ? findUserProfileByEmailOrCpf(userEmail) : null)) {
+        // Conta existente sem proposta: perfil criado antes do sistema de
+        // aprovação vale como conta válida (carimba na hora, em vez de
+        // mandar p/ o questionário de criar conta).
+        const profile = getLocalUserProfile(user.uid) || findUserProfileByEmailOrCpf(userEmail)!;
+        clearRegistrationDraft();
+        setUserProfile(markLocalProfileApproved(profile));
+        setCurrentScreen('bank');
+        setRoute({ name: 'conta' });
+        soundEffects.playPixSuccess();
       } else {
         // Never create account without admin validation!
+        // Limpa o rascunho velho antes de pré-preencher: sem isso o merge
+        // ressuscita os dados da tentativa anterior de criar conta.
+        clearRegistrationDraft();
         saveRegistrationDraft({
           fullName: user.displayName || '',
           preferredName: user.displayName?.split(' ')[0] || '',
@@ -526,8 +550,9 @@ export default function App() {
 
   // Handle manual or biometric access from access modal
   const handleManualAccess = (profileOrIdentifier?: UserProfile | string) => {
+    clearRegistrationDraft();
     if (typeof profileOrIdentifier === 'object' && profileOrIdentifier !== null) {
-      setUserProfile(profileOrIdentifier);
+      setUserProfile(markLocalProfileApproved(profileOrIdentifier));
       setCurrentScreen('bank');
       setRoute({ name: 'conta' });
       soundEffects.playPixSuccess();

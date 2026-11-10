@@ -77,12 +77,41 @@ export const DocumentCapture: React.FC<DocumentCaptureProps> = ({
     }
   };
 
+  // Reduz a foto para no máximo 1280px (JPEG 0.82): a foto crua do celular
+  // (vários MB em base64) estourava o limite de 1 MiB do documento no
+  // Firestore e o envio da proposta falhava em silêncio.
+  const downscaleImage = (src: string): Promise<string> =>
+    new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 1280;
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(src);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      img.onerror = () => resolve(src);
+      img.src = src;
+    });
+
   const handleCapturePhoto = () => {
     if (!videoRef.current) return;
     const video = videoRef.current;
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 800;
-    canvas.height = video.videoHeight || 600;
+    const maxDim = 1280;
+    const scale = Math.min(
+      1,
+      maxDim / Math.max(video.videoWidth || 800, video.videoHeight || 600)
+    );
+    canvas.width = Math.max(1, Math.round((video.videoWidth || 800) * scale));
+    canvas.height = Math.max(1, Math.round((video.videoHeight || 600) * scale));
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -92,7 +121,7 @@ export const DocumentCapture: React.FC<DocumentCaptureProps> = ({
       ctx.scale(-1, 1);
     }
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
 
     stopCamera();
     onPhotoCaptured(dataUrl);
@@ -106,7 +135,8 @@ export const DocumentCapture: React.FC<DocumentCaptureProps> = ({
     reader.onload = (event) => {
       const base64 = event.target?.result as string;
       if (base64) {
-        onPhotoCaptured(base64);
+        // Reduz antes de guardar: foto original do celular pode ter vários MB.
+        downscaleImage(base64).then(onPhotoCaptured);
       }
     };
     reader.readAsDataURL(file);

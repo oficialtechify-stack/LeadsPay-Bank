@@ -216,6 +216,21 @@ export function saveLocalUserProfile(uid: string, profile: UserProfile): void {
   }
 }
 
+/**
+ * Contas criadas antes do sistema de aprovação (ex.: Bank de setembro/2026)
+ * não têm `status` — createInitialUserProfile/handleAccountCreated nunca o
+ * gravaram. Um perfil existente sem carimbo é conta válida: carimba como
+ * aprovado e persiste, para o login não tratar a conta como inexistente.
+ */
+export function markLocalProfileApproved(profile: UserProfile): UserProfile {
+  if (profile.status === 'approved') return profile;
+  const stamped: UserProfile = { ...profile, status: 'approved' };
+  if (stamped.uid) {
+    saveLocalUserProfile(stamped.uid, stamped);
+  }
+  return stamped;
+}
+
 export function getLocalTransactions(uid: string): Transaction[] {
   try {
     const raw = localStorage.getItem(`leadspay_txs_${uid}`);
@@ -548,12 +563,16 @@ export async function submitAccountApplication(
     : [application, ...existing];
   saveLocalApplications(updatedList);
 
-  // 2. Try Firestore
+  // 2. Sync para o Firestore — a proposta SÓ existe para o admin se chegar
+  // aqui. Se falhar (sem login, sem conexão, documento grande demais), NÃO
+  // finge sucesso: lança o erro para o modal mostrar, em vez de exibir
+  // "Proposta Enviada" com a proposta presa só neste aparelho.
   try {
     const appRef = doc(db, 'account_applications', appId);
     await setDoc(appRef, application);
   } catch (err) {
     console.warn('Could not sync KYC application to cloud Firestore (saved locally):', err);
+    throw new Error('Não conseguimos enviar sua proposta para o servidor. Seus dados estão salvos neste aparelho — confira sua conexão e tente enviar novamente.');
   }
 
   return application;
