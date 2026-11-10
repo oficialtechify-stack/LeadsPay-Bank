@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { LoginEntryView } from './components/LoginEntryView';
 import { HeaderBar } from './components/HeaderBar';
@@ -43,30 +43,35 @@ import {
   doc,
   getDoc,
   setDoc,
+  updateDoc,
   db
 } from './firebase/config';
 import {
   signInWithGoogle,
   logOut,
   subscribeToUserAccount,
+  subscribeToUserApplication,
   recordTransaction,
   saveCard,
   updateUserProfile as updateUserProfileInDb,
   createInitialUserProfile,
   createDefaultVirtualCard,
   generateCardExpiry,
-  generateAccountNumber,
   getLocalUserProfile,
   getLocalCards,
   saveLocalUserProfile,
   saveLocalCards,
+  getServerApplication,
+  getServerProfile,
+  getServerCards,
+  getRegistrationDraft,
   ADMIN_EMAIL,
   findApplicationByEmailOrCpf,
-  findUserProfileByEmailOrCpf,
   getLocalUserApplication,
   saveRegistrationDraft,
   clearRegistrationDraft,
-  markLocalProfileApproved
+  markLocalProfileApproved,
+  RegistrationDraft
 } from './services/firebaseBankService';
 
 export default function App() {
@@ -101,6 +106,15 @@ export default function App() {
   const [pendingApp, setPendingApp] = useState<AccountApplication | null>(null);
   const [openAccountPrefill, setOpenAccountPrefill] = useState<{ email?: string; cpf?: string } | undefined>(undefined);
   const [notification, setNotification] = useState<BankNotification | null>(null);
+  // Mensagem inicial do modal de acesso (prop `initialMessage`, §3.5): usada
+  // pelo gate do `onApprovedLogin` e pelo atalho "Área Pix" (§3.6).
+  const [accessMessage, setAccessMessage] = useState<string | null>(null);
+
+  // Assinaturas do Firestore (§3.4, DET-4): a da conta e a da aplicação
+  // vivem em refs próprios, para o `enterBank` (fora do efeito) e o logout
+  // poderem cancelá-las — e o cleanup do efeito cancelar as duas.
+  const accountUnsubscribeRef = useRef<(() => void) | null>(null);
+  const applicationUnsubscribeRef = useRef<(() => void) | null>(null);
 
   // Biometric gate modal
   const [biometricConfig, setBiometricConfig] = useState<{
@@ -131,10 +145,177 @@ export default function App() {
     setRoute(next);
   };
 
-  // Real-time Firebase Authentication & per-user individual Firestore synchronization
-  useEffect(() => {
-    let unsubscribeFirestore: (() => void) | null = null;
+  // Rotina única de entrada no banco (§3.4, `enterBank`): usada pelo ramo A,
+  // pela transição pendente→aprovado e pelo `onApprovedLogin` (§3.5). O
+  // `serverProfile` é o perfil JÁ LIDO pela decisão — é ele que diz se o
+  // documento `users/{uid}` existe no servidor, sem nova leitura. Se o
+  // chamador não o tiver, o `enterBank` faz o one-shot antes de decidir.
+  const enterBank = async (uid: string, approvedApp?: AccountApplication | null, serverProfile?: UserProfile | null) => {
+    clearRegistrationDraft();
+    setIsPendingApprovalModalOpen(false);
 
+    let serverDoc: UserProfile | null | undefined = serverProfile;
+    if (serverDoc === undefined) {
+      try {
+        serverDoc = await getServerProfile(uid);
+      } catch (err) {
+        console.warn('enterBank: não foi possível ler o perfil no servidor:', err);
+        serverDoc = null;
+      }
+    }
+
+    let profile: UserProfile;
+    if (serverDoc) {
+      // Perfil existe no servidor (aprovado ou legado): entra com ele e
+      // carimba `approved` no estado (fecha DET-5). Legado sem carimbo
+      // ganha o carimbo no servidor como best-effort, sem travar a entrada.
+      profile = markLocalProfileApproved({ ...serverDoc, uid });
+      if (serverDoc.status === undefined) {
+        updateDoc(doc(db, 'users', uid), { status: 'approved' }).catch(() => {});
+      }
+    } else if (approvedApp) {
+      // Aprovação parcial: proposta aprovada mas perfil sem sync. Monta o
+      // perfil a partir da proposta e o persiste com `setDoc` (fecha IMP-5)
+      // — sem isso, os `updateDoc` de saldo/perfil falham para sempre.
+      profile = createInitialUserProfile({
+        uid,
+        displayName: approvedApp.fullName,
+        email: approvedApp.email,
+        photoURL: approvedApp.selfiePhoto
+      });
+      profile.status = 'approved';
+      saveLocalUserProfile(uid, profile);
+      try {
+        await setDoc(doc(db, 'users', uid), profile);
+      } catch (err) {
+        console.warn('enterBank: não foi possível persistir o perfil no servidor:', err);
+      }
+    } else {
+      const local = getLocalUserProfile(uid);
+      profile = local
+        ? markLocalProfileApproved(local)
+        : createInitialUserProfile({
+            uid,
+            displayName: auth.currentUser?.displayName,
+            email: auth.currentUser?.email,
+            photoURL: auth.currentUser?.photoURL
+          });
+      profile.status = 'approved';
+    }
+    profile.balance = Math.max(0, profile.balance || 0);
+    profile.status = 'approved';
+    setUserProfile(profile);
+
+    // Assinatura da conta — o ÚNICO carregador de perfil + transações +
+    // cartões (são subcoleções, não campos do doc).
+    if (accountUnsubscribeRef.current) {
+      accountUnsubscribeRef.current();
+      accountUnsubscribeRef.current = null;
+    }
+    accountUnsubscribeRef.current = subscribeToUserAccount(uid, {
+      onProfile: (updatedProfile) => {
+        setUserProfile(prev => ({
+          ...prev,
+          ...updatedProfile,
+          balance: Math.max(0, updatedProfile.balance || 0),
+          uid
+        }));
+      },
+      onTransactions: (updatedTxs) => setTransactions(updatedTxs),
+      onCards: (updatedCards) => {
+        if (updatedCards.length > 0) setCards(updatedCards);
+      }
+    });
+
+    // Regra de cartão (fecha IMP-6, corrigida pela revisão v3): one-shot
+    // ANTES de decidir — o listener nunca reporta lista vazia. Só cria o
+    // cartão padrão se o snapshot do servidor vier vazio E o local estiver
+    // vazio. Aprovado novo já tem o cartão da aprovação: não dispara.
+    try {
+      const serverCards = await getServerCards(uid);
+      const localCards = getLocalCards(uid);
+      if (serverCards.length === 0 && localCards.length === 0) {
+        const card = createDefaultVirtualCard(uid, profile.name);
+        saveLocalCards(uid, [card]);
+        setCards([card]);
+        try {
+          await setDoc(doc(db, 'users', uid, 'cards', card.id), card);
+        } catch (err) {
+          console.warn('enterBank: não foi possível persistir o cartão no servidor:', err);
+        }
+      }
+    } catch (err) {
+      console.warn('enterBank: não foi possível ler os cartões no servidor:', err);
+    }
+
+    setCurrentScreen('bank');
+  };
+
+  // Assinatura da aplicação (§3.4, DET-4): vive num ref próprio. O callback
+  // inicial entrega a cópia local — PROVISÓRIA, ignorada: a decisão já foi
+  // tomada pelo `getDoc` one-shot; a assinatura só comanda transições
+  // (aprovado / em ajuste / rejeitado) a partir do snapshot do servidor.
+  const cancelApplicationSubscription = () => {
+    if (applicationUnsubscribeRef.current) {
+      applicationUnsubscribeRef.current();
+      applicationUnsubscribeRef.current = null;
+    }
+  };
+
+  const subscribeApplication = (uid: string) => {
+    cancelApplicationSubscription();
+    let isInitialLocal = true;
+    applicationUnsubscribeRef.current = subscribeToUserApplication(uid, (app) => {
+      if (isInitialLocal) return;
+      if (!app) return;
+      if (app.status === 'approved') {
+        cancelApplicationSubscription();
+        void enterBank(uid, app);
+      } else {
+        setPendingApp(app);
+      }
+    });
+    isInitialLocal = false;
+  };
+
+  // Pré-preenchimento do Google no rascunho (§3.1(i), ramo C): mescla SÓ
+  // valores com conteúdo — campos vazios (`''`/`null`) nunca entram no
+  // merge, e sem dado do Google nada é mesclado. Regra de identidade: se o
+  // rascunho tem e-mail e ele difere do e-mail da sessão nova, o rascunho
+  // é limpo antes de mesclar (troca de pessoa no mesmo aparelho).
+  const mergeGooglePrefillIntoDraft = (
+    user: { displayName?: string | null; photoURL?: string | null },
+    userEmail: string
+  ) => {
+    const draft = getRegistrationDraft();
+    if (
+      draft?.email &&
+      userEmail &&
+      draft.email.toLowerCase().trim() !== userEmail.toLowerCase().trim()
+    ) {
+      clearRegistrationDraft();
+    }
+    const prefill: Partial<RegistrationDraft> = {};
+    if (user.displayName) {
+      prefill.fullName = user.displayName;
+      prefill.preferredName = user.displayName.split(' ')[0];
+    }
+    if (userEmail) prefill.email = userEmail;
+    if (user.photoURL) prefill.selfiePhoto = user.photoURL;
+    if (Object.keys(prefill).length > 0) {
+      saveRegistrationDraft(prefill);
+    }
+  };
+
+  // Real-time Firebase Authentication & per-user individual Firestore synchronization
+  // Fonte da verdade é o SERVIDOR (§3.4): as duas leituras one-shot são
+  // feitas antes dos ramos A/B/C, cada uma com catch separado por código de
+  // erro — `permission-denied` é erro de regra (registrado, nunca tratado
+  // como offline); `unavailable` / `network-request-failed` é fallback
+  // local silencioso. Se qualquer leitura falhar, a decisão usa os dados
+  // locais exatamente como hoje (passo 6) — o local nunca vence o servidor
+  // quando o servidor respondeu.
+  useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
         const userEmail = currentUser.email?.toLowerCase().trim() || '';
@@ -173,73 +354,172 @@ export default function App() {
           return;
         }
 
-        // 2. Regular user verification: "nunca crie uma conta sem validacao da administracao"
-        const existingApp = getLocalUserApplication(currentUser.uid) || 
-                            (userEmail ? findApplicationByEmailOrCpf(userEmail) : null);
-        const existingProfile = getLocalUserProfile(currentUser.uid);
+        const uid = currentUser.uid;
 
-        // A. Aprovado pelo administrador — ou conta existente de antes do
-        // sistema de aprovação (sem carimbo de status): perfil existente
-        // vale como conta válida e é carimbado na hora, em vez de cair no
-        // questionário de criar conta.
-        const approvedProfile = existingProfile ? markLocalProfileApproved(existingProfile) : null;
-        if (existingApp?.status === 'approved' || approvedProfile) {
-          let profile = approvedProfile || createInitialUserProfile({
-            uid: currentUser.uid,
-            displayName: existingApp?.fullName || currentUser.displayName || 'Cliente LeadsPay',
-            email: currentUser.email || existingApp?.email || '',
-            photoURL: existingApp?.selfiePhoto || currentUser.photoURL
-          });
-          profile.balance = Math.max(0, profile.balance || 0);
-          profile.status = 'approved';
-          clearRegistrationDraft();
-          setUserProfile(profile);
-
-          if (unsubscribeFirestore) unsubscribeFirestore();
-          unsubscribeFirestore = subscribeToUserAccount(currentUser.uid, {
-            onProfile: (updatedProfile) => {
-              setUserProfile(prev => ({
-                ...prev,
-                ...updatedProfile,
-                balance: Math.max(0, updatedProfile.balance || 0),
-                uid: currentUser.uid
-              }));
-            },
-            onTransactions: (updatedTxs) => setTransactions(updatedTxs),
-            onCards: (updatedCards) => {
-              if (updatedCards.length > 0) setCards(updatedCards);
+        // Leituras do servidor, independentes (nunca um `Promise.all` que
+        // descarta os dois resultados quando um rejeita).
+        const readServer = async <T,>(
+          label: string,
+          fn: () => Promise<T | null>
+        ): Promise<{ value: T | null; failed: boolean }> => {
+          try {
+            return { value: await fn(), failed: false };
+          } catch (err) {
+            const code = (err as { code?: string })?.code || '';
+            if (code === 'permission-denied') {
+              console.error(
+                `[Bank] permission-denied ao ler ${label} — conferir a publicação das regras (§4 item 5).`,
+                err
+              );
+            } else if (code === 'unavailable' || code === 'network-request-failed') {
+              console.warn(`[Bank] sem rede ao ler ${label} — usando dados locais.`, err);
+            } else {
+              console.error(
+                `[Bank] erro ao ler ${label} (código ${code || 'desconhecido'}) — usando dados locais.`,
+                err
+              );
             }
-          });
+            return { value: null, failed: true };
+          }
+        };
 
-          setCurrentScreen('bank');
-        } else if (existingApp) {
-          // B. Proposal exists and is pending or needs revision: Keep on entry screen and show pending notice!
+        const appRead = await readServer(
+          `account_applications/${uid}`,
+          () => getServerApplication(uid)
+        );
+        const profileRead = await readServer(
+          `users/${uid}`,
+          () => getServerProfile(uid)
+        );
+
+        // Passo 6 — fallback local: qualquer leitura falhou. Ramos A/B/C
+        // exatamente como hoje, com os dados locais.
+        if (appRead.failed || profileRead.failed) {
+          console.warn('[Bank] decisão de entrada por dados locais (servidor sem resposta).');
+          const existingApp = getLocalUserApplication(uid) ||
+                              (userEmail ? findApplicationByEmailOrCpf(userEmail) : null);
+          const existingProfile = getLocalUserProfile(uid);
+
+          // A. Aprovado pelo administrador — ou conta existente de antes do
+          // sistema de aprovação (sem carimbo de status): perfil existente
+          // vale como conta válida e é carimbado na hora, em vez de cair no
+          // questionário de criar conta.
+          const approvedProfile = existingProfile ? markLocalProfileApproved(existingProfile) : null;
+          if (existingApp?.status === 'approved' || approvedProfile) {
+            let profile = approvedProfile || createInitialUserProfile({
+              uid,
+              displayName: existingApp?.fullName || currentUser.displayName || 'Cliente LeadsPay',
+              email: currentUser.email || existingApp?.email || '',
+              photoURL: existingApp?.selfiePhoto || currentUser.photoURL
+            });
+            profile.balance = Math.max(0, profile.balance || 0);
+            profile.status = 'approved';
+            clearRegistrationDraft();
+            setUserProfile(profile);
+
+            if (accountUnsubscribeRef.current) accountUnsubscribeRef.current();
+            accountUnsubscribeRef.current = subscribeToUserAccount(uid, {
+              onProfile: (updatedProfile) => {
+                setUserProfile(prev => ({
+                  ...prev,
+                  ...updatedProfile,
+                  balance: Math.max(0, updatedProfile.balance || 0),
+                  uid
+                }));
+              },
+              onTransactions: (updatedTxs) => setTransactions(updatedTxs),
+              onCards: (updatedCards) => {
+                if (updatedCards.length > 0) setCards(updatedCards);
+              }
+            });
+
+            setCurrentScreen('bank');
+          } else if (existingApp) {
+            // B. Proposal exists and is pending or needs revision: Keep on entry screen and show pending notice!
+            setCurrentScreen('onboarding');
+            setPendingApp(existingApp);
+            setIsPendingApprovalModalOpen(true);
+          } else {
+            // C. User has NO account: send to open account flow with draft pre-filled!
+            setCurrentScreen('onboarding');
+            mergeGooglePrefillIntoDraft(currentUser, userEmail);
+            setOpenAccountPrefill({ email: userEmail });
+            setIsOpenAccountModalOpen(true);
+          }
+          return;
+        }
+
+        const serverApp = appRead.value;
+        const serverProfile = profileRead.value;
+
+        // Passo 2 — Aprovado (ramo A): proposta aprovada OU perfil aprovado.
+        if (serverApp?.status === 'approved' || serverProfile?.status === 'approved') {
+          await enterBank(uid, serverApp, serverProfile);
+          return;
+        }
+
+        // Passo 3 — Legado pré-KYC (ramo A): perfil no servidor, sem
+        // proposta, sem carimbo. É a conta de setembro.
+        if (serverProfile && !serverApp && serverProfile.status === undefined) {
+          await enterBank(uid, null, serverProfile);
+          return;
+        }
+
+        // Passo 4 — Pendente / em ajuste (ramo B): modal de aguardo COM a
+        // proposta do servidor, e a assinatura que acompanha transições.
+        if (serverApp && (serverApp.status === 'pending' || serverApp.status === 'needs_revision')) {
           setCurrentScreen('onboarding');
-          setPendingApp(existingApp);
+          setPendingApp(serverApp);
           setIsPendingApprovalModalOpen(true);
-        } else {
-          // C. User has NO account: send to open account flow with draft pre-filled!
+          subscribeApplication(uid);
+          return;
+        }
+
+        // Passo 7 — Rejeitada: estado de rejeição (§3.9), não o modal de
+        // aguardo "em análise". Assinatura ativa, como no passo 4.
+        if (serverApp?.status === 'rejected') {
           setCurrentScreen('onboarding');
-          saveRegistrationDraft({
-            fullName: currentUser.displayName || '',
-            preferredName: currentUser.displayName?.split(' ')[0] || '',
-            email: userEmail,
-            selfiePhoto: currentUser.photoURL || ''
-          });
+          setPendingApp(serverApp);
+          setIsPendingApprovalModalOpen(true);
+          subscribeApplication(uid);
+          return;
+        }
+
+        // Passo 5 — Sem conta (ramo C): abre o cadastro, sem
+        // `clearRegistrationDraft()` — o rascunho é mesclado (§3.1).
+        if (!serverApp && !serverProfile) {
+          setCurrentScreen('onboarding');
+          mergeGooglePrefillIntoDraft(currentUser, userEmail);
           setOpenAccountPrefill({ email: userEmail });
           setIsOpenAccountModalOpen(true);
+          return;
         }
+
+        // Passo 8 — Ramo padrão: perfil no servidor com status diferente de
+        // 'approved' e de indefinido (e sem proposta). Hoje inalcançável —
+        // nenhum escritor grava outro status em `users/{uid}`. O cadastro é
+        // o caminho seguro: nunca entra no banco sem aprovação.
+        console.warn(
+          '[Bank] perfil no servidor com status inesperado e sem proposta — abrindo cadastro.',
+          serverProfile?.status
+        );
+        setCurrentScreen('onboarding');
+        mergeGooglePrefillIntoDraft(currentUser, userEmail);
+        setOpenAccountPrefill({ email: userEmail });
+        setIsOpenAccountModalOpen(true);
       } else {
-        if (unsubscribeFirestore) {
-          unsubscribeFirestore();
-          unsubscribeFirestore = null;
+        if (accountUnsubscribeRef.current) {
+          accountUnsubscribeRef.current();
+          accountUnsubscribeRef.current = null;
         }
+        cancelApplicationSubscription();
       }
     });
 
     return () => {
       unsubscribeAuth();
-      if (unsubscribeFirestore) unsubscribeFirestore();
+      if (accountUnsubscribeRef.current) accountUnsubscribeRef.current();
+      cancelApplicationSubscription();
     };
   }, []);
 
@@ -260,90 +540,14 @@ export default function App() {
     });
   };
 
-  // Google Sign-in Handler
+  // Google Sign-in Handler (§3.5): faz SÓ `await signInWithGoogle()` — o
+  // listener (§3.4) decide a tela. O ramo do admin, a checagem de
+  // proposta/perfil local e o `clearRegistrationDraft()` do ramo C somem
+  // junto com a decisão deste handler. A rota não é definida aqui (DET-9):
+  // no re-login em sessão, a rota do usuário é preservada.
   const handleGoogleSignIn = async () => {
     try {
-      const { user } = await signInWithGoogle();
-      const userEmail = user.email?.toLowerCase().trim() || '';
-      const isAdmin = userEmail === ADMIN_EMAIL.toLowerCase();
-
-      if (isAdmin) {
-        let adminProf = getLocalUserProfile(user.uid);
-        if (!adminProf) {
-          adminProf = createInitialUserProfile({
-            uid: user.uid,
-            displayName: user.displayName || 'Administrador LeadsPay',
-            email: user.email || ADMIN_EMAIL,
-            photoURL: user.photoURL
-          });
-          saveLocalUserProfile(user.uid, adminProf);
-        }
-        clearRegistrationDraft();
-        setUserProfile(adminProf);
-        // §7.1 caminho 3 (mesmo tratamento do ramo admin do onAuthStateChanged).
-        const adminLocalCards = getLocalCards(user.uid);
-        if (adminLocalCards.length > 0) {
-          setCards(adminLocalCards);
-        } else {
-          const adminCard = createDefaultVirtualCard(user.uid, adminProf.name);
-          saveLocalCards(user.uid, [adminCard]);
-          setCards([adminCard]);
-        }
-        setCurrentScreen('bank');
-        setRoute({ name: 'conta' });
-        soundEffects.playPixSuccess();
-        return;
-      }
-
-      // Check application status
-      const app = (user.uid ? getLocalUserApplication(user.uid) : null) || 
-                  (userEmail ? findApplicationByEmailOrCpf(userEmail) : null);
-
-      if (app) {
-        if (app.status === 'approved') {
-          clearRegistrationDraft();
-          const profile = getLocalUserProfile(user.uid) || getLocalUserProfile(app.userId);
-          if (profile) {
-            setUserProfile(markLocalProfileApproved(profile));
-            setCurrentScreen('bank');
-            setRoute({ name: 'conta' });
-            soundEffects.playPixSuccess();
-          }
-        } else {
-          // Status is pending or needs revision
-          setPendingApp(app);
-          setIsPendingApprovalModalOpen(true);
-        }
-      } else if (getLocalUserProfile(user.uid) || (userEmail ? findUserProfileByEmailOrCpf(userEmail) : null)) {
-        // Conta existente sem proposta: perfil criado antes do sistema de
-        // aprovação vale como conta válida (carimba na hora, em vez de
-        // mandar p/ o questionário de criar conta).
-        const profile = getLocalUserProfile(user.uid) || findUserProfileByEmailOrCpf(userEmail)!;
-        clearRegistrationDraft();
-        setUserProfile(markLocalProfileApproved(profile));
-        setCurrentScreen('bank');
-        setRoute({ name: 'conta' });
-        soundEffects.playPixSuccess();
-      } else {
-        // Never create account without admin validation!
-        // Limpa o rascunho velho antes de pré-preencher: sem isso o merge
-        // ressuscita os dados da tentativa anterior de criar conta.
-        clearRegistrationDraft();
-        saveRegistrationDraft({
-          fullName: user.displayName || '',
-          preferredName: user.displayName?.split(' ')[0] || '',
-          email: userEmail,
-          selfiePhoto: user.photoURL || ''
-        });
-        setOpenAccountPrefill({ email: userEmail });
-        setIsOpenAccountModalOpen(true);
-        setNotification({
-          id: Date.now().toString(),
-          title: 'Cadastro Necessário',
-          message: 'Conectado com o Google! Agora preencha seus dados e fotos para validação da sua conta.',
-          type: 'card'
-        });
-      }
+      await signInWithGoogle();
     } catch (err: unknown) {
       const authError = err as { code?: string; message?: string };
       if (authError?.code !== 'auth/popup-closed-by-user') {
@@ -548,45 +752,6 @@ export default function App() {
     soundEffects.playPixSuccess();
   };
 
-  // Handle manual or biometric access from access modal
-  const handleManualAccess = (profileOrIdentifier?: UserProfile | string) => {
-    clearRegistrationDraft();
-    if (typeof profileOrIdentifier === 'object' && profileOrIdentifier !== null) {
-      setUserProfile(markLocalProfileApproved(profileOrIdentifier));
-      setCurrentScreen('bank');
-      setRoute({ name: 'conta' });
-      soundEffects.playPixSuccess();
-      return;
-    }
-
-    // §7.1 caminho 1: o modal chama onManualAccess() sem argumento quando
-    // acha uma proposta aprovada mas nenhum perfil local (o lookup era
-    // quebrado, §7.9). Sem perfil resolvido, só entra se o estado atual já
-    // for um perfil real carregado (tem uid). O perfil inicial neutro nunca
-    // pode ser renderizado após navegação pós-login — e, sem identificador
-    // aqui, não há como resolver o perfil: fica na login com aviso.
-    if (!userProfile.uid) {
-      setNotification({
-        id: Date.now().toString(),
-        title: 'Conta não encontrada neste aparelho',
-        message: 'Não localizamos sua conta. Acesse com o Google ou abra uma conta.',
-        type: 'card'
-      });
-      return;
-    }
-
-    requestBiometric('Acessar LeadsPay Bank', () => {
-      if (typeof profileOrIdentifier === 'string' && profileOrIdentifier !== 'Biometria') {
-        setUserProfile(prev => ({
-          ...prev,
-          name: profileOrIdentifier.includes('@') ? profileOrIdentifier.split('@')[0] : prev.name
-        }));
-      }
-      setCurrentScreen('bank');
-      setRoute({ name: 'conta' });
-    });
-  };
-
   // Q13=(A): "Salvar Novos Limites" persiste de verdade — estado local +
   // updateUserProfile (localStorage + Firestore). Sem ele, reabrir o modal
   // restaurava os valores do perfil (§7.14).
@@ -601,6 +766,24 @@ export default function App() {
   // Handle access from login entry screen
   const handleAccessFromOnboarding = () => {
     setIsAccessAccountModalOpen(true);
+  };
+
+  // Botão "Acessar Minha Conta Aprovada" (§3.5): gate na primeira linha —
+  // sem sessão, ou com UID diferente da proposta, fecha o modal e abre o
+  // login com a mensagem (prop `initialMessage`) — e NÃO entra. Se o gate
+  // passar, o corpo antigo (montar perfil a partir da proposta) é
+  // substituído por `enterBank`: o perfil já existe no servidor (a
+  // aprovação o escreveu), e a entrada assina o `subscribeToUserAccount`
+  // como todo o resto.
+  const handleApprovedLogin = async (app: AccountApplication) => {
+    if (!auth.currentUser || auth.currentUser.uid !== app.userId) {
+      setIsPendingApprovalModalOpen(false);
+      setAccessMessage('Entre com e-mail e senha ou com o Google para acessar sua conta aprovada.');
+      setIsAccessAccountModalOpen(true);
+      return;
+    }
+    setIsPendingApprovalModalOpen(false);
+    await enterBank(app.userId, app);
   };
 
   // Handle account created from registration modal
@@ -658,6 +841,12 @@ export default function App() {
               onOpenRegister={() => setIsOpenAccountModalOpen(true)}
               onGoogleSignIn={handleGoogleSignIn}
               onOpenQuickPix={() => {
+                // §3.6: o atalho "Área Pix" passa a exigir login.
+                if (!auth.currentUser) {
+                  setAccessMessage('Entre para usar o Pix.');
+                  setIsAccessAccountModalOpen(true);
+                  return;
+                }
                 setCurrentScreen('bank');
                 setIsPixModalOpen(true);
               }}
@@ -1003,18 +1192,16 @@ export default function App() {
       {/* 7. Access Account Modal (Login with Google or credentials) */}
       <AccessAccountModal
         isOpen={isAccessAccountModalOpen}
-        onClose={() => setIsAccessAccountModalOpen(false)}
+        onClose={() => {
+          setIsAccessAccountModalOpen(false);
+          setAccessMessage(null);
+        }}
         onGoogleSignIn={handleGoogleSignIn}
-        onManualAccess={handleManualAccess}
+        initialMessage={accessMessage ?? undefined}
         onOpenRegister={(prefill) => {
           setOpenAccountPrefill(prefill);
           setIsAccessAccountModalOpen(false);
           setIsOpenAccountModalOpen(true);
-        }}
-        onShowPendingApproval={(app) => {
-          setPendingApp(app);
-          setIsAccessAccountModalOpen(false);
-          setIsPendingApprovalModalOpen(true);
         }}
       />
 
@@ -1046,53 +1233,9 @@ export default function App() {
           setIsPendingApprovalModalOpen(false);
           setIsOpenAccountModalOpen(true);
         }}
-        onApprovedLogin={(app) => {
-          setIsPendingApprovalModalOpen(false);
-          // §7.1 caminho 2: o fallback antigo espalhava o perfil inicial
-          // (`{...userProfile, name, document, email}`) e mantinha conta e
-          // pixKeys de terceiro. Sem perfil local, o perfil é construído SÓ
-          // com os dados reais da proposta aprovada — mesma origem de
-          // approveApplicationAndCreateAccount — e o cartão padrão vem de
-          // createDefaultVirtualCard com o nome real.
-          const localProfile = getLocalUserProfile(app.userId);
-          if (localProfile) {
-            setUserProfile(localProfile);
-          } else {
-            const approvedProfile: UserProfile = {
-              uid: app.userId,
-              name: app.fullName,
-              preferredName: app.preferredName,
-              document: app.cpf,
-              email: app.email,
-              photoURL: app.selfiePhoto || '',
-              birthDate: app.birthDate,
-              address: app.address,
-              accountNumber: generateAccountNumber(),
-              agency: '0001',
-              bankCode: '592 - LeadsPay S.A.',
-              balance: 0.00,
-              investedBalance: 0.00,
-              status: 'approved',
-              pixKeys: [
-                { type: 'cpf', value: app.cpf },
-                { type: 'email', value: app.email },
-                { type: 'phone', value: app.phone },
-                { type: 'random', value: `lp-${Math.random().toString(36).substring(2, 10)}` }
-              ],
-              biometricEnabled: true,
-              streetProtectionMode: false,
-              dailyPixLimit: 10000.00,
-              nightlyPixLimit: 1000.00
-            };
-            saveLocalUserProfile(app.userId, approvedProfile);
-            const defaultCard = createDefaultVirtualCard(app.userId, app.fullName);
-            saveLocalCards(app.userId, [defaultCard]);
-            setCards([defaultCard]);
-            setUserProfile(approvedProfile);
-          }
-          setCurrentScreen('bank');
-          setRoute({ name: 'conta' });
-          soundEffects.playPixSuccess();
+        onApprovedLogin={handleApprovedLogin}
+        onStatusRefreshed={(serverApp) => {
+          if (serverApp) setPendingApp(serverApp);
         }}
       />
 

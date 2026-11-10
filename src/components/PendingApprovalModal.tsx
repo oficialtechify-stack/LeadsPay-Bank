@@ -16,7 +16,7 @@ import {
 import confetti from 'canvas-confetti';
 import { soundEffects } from '../utils/audio';
 import { AccountApplication } from '../types';
-import { getLocalApplications, getLocalUserProfile } from '../services/firebaseBankService';
+import { getLocalApplications, getLocalUserProfile, getServerApplication } from '../services/firebaseBankService';
 
 interface PendingApprovalModalProps {
   isOpen: boolean;
@@ -24,6 +24,10 @@ interface PendingApprovalModalProps {
   application: AccountApplication | null;
   onOpenRevision?: (app: AccountApplication) => void;
   onApprovedLogin?: (app: AccountApplication) => void;
+  // §3.9: o resultado do one-shot do servidor é entregue ao App, que
+  // atualiza o `pendingApp` — é o que faz a transição pendente→aprovado
+  // funcionar sem reload mesmo com o modal aberto.
+  onStatusRefreshed?: (app: AccountApplication | null) => void;
 }
 
 export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
@@ -31,7 +35,8 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
   onClose,
   application,
   onOpenRevision,
-  onApprovedLogin
+  onApprovedLogin,
+  onStatusRefreshed
 }) => {
   const [currentApp, setCurrentApp] = useState<AccountApplication | null>(application);
   const [isChecking, setIsChecking] = useState(false);
@@ -44,43 +49,57 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
 
   if (!isOpen || !currentApp) return null;
 
-  const handleRefreshStatus = () => {
+  // §3.9: "Verificar Status" lê a proposta NO SERVIDOR (one-shot) e
+  // entrega o resultado ao App pelo `onStatusRefreshed` — é o que faz a
+  // transição pendente→aprovado funcionar sem reload mesmo com o modal
+  // aberto. Sem resposta do servidor, o local segue como fallback.
+  const handleRefreshStatus = async () => {
     setIsChecking(true);
     setCheckFeedback(null);
     soundEffects.playNfcTap();
 
-    setTimeout(() => {
-      // Re-read applications from storage
-      const all = getLocalApplications();
-      const fresh = all.find(
-        (a) => a.id === currentApp.id || a.userId === currentApp.userId || a.cpf === currentApp.cpf
-      );
+    let fresh: AccountApplication | null = null;
+    try {
+      fresh = await getServerApplication(currentApp.userId);
+    } catch (err) {
+      console.warn('Verificar Status: não foi possível ler a proposta no servidor:', err);
+    }
 
-      if (fresh) {
-        setCurrentApp(fresh);
-        if (fresh.status === 'approved') {
-          soundEffects.playPixSuccess();
-          confetti({
-            particleCount: 80,
-            spread: 80,
-            origin: { y: 0.6 },
-            colors: ['#00e676', '#a3e635', '#ffffff']
-          });
-          setCheckFeedback('Parabéns! Sua conta foi aprovada pela administração!');
-        } else if (fresh.status === 'needs_revision') {
-          setCheckFeedback('A administração solicitou um ajuste em sua proposta.');
-        } else {
-          setCheckFeedback('Sua proposta continua em análise com a equipe de validação.');
-        }
+    if (!fresh) {
+      const all = getLocalApplications();
+      fresh = all.find(
+        (a) => a.id === currentApp.id || a.userId === currentApp.userId || a.cpf === currentApp.cpf
+      ) || null;
+    }
+
+    if (fresh) {
+      setCurrentApp(fresh);
+      onStatusRefreshed?.(fresh);
+      if (fresh.status === 'approved') {
+        soundEffects.playPixSuccess();
+        confetti({
+          particleCount: 80,
+          spread: 80,
+          origin: { y: 0.6 },
+          colors: ['#00e676', '#a3e635', '#ffffff']
+        });
+        setCheckFeedback('Parabéns! Sua conta foi aprovada pela administração!');
+      } else if (fresh.status === 'needs_revision') {
+        setCheckFeedback('A administração solicitou um ajuste em sua proposta.');
+      } else if (fresh.status === 'rejected') {
+        setCheckFeedback('Sua proposta foi recusada. Veja o motivo acima.');
       } else {
-        setCheckFeedback('Sua proposta continua em análise.');
+        setCheckFeedback('Sua proposta continua em análise com a equipe de validação.');
       }
-      setIsChecking(false);
-    }, 900);
+    } else {
+      setCheckFeedback('Sua proposta continua em análise.');
+    }
+    setIsChecking(false);
   };
 
   const isApproved = currentApp.status === 'approved';
   const isRevision = currentApp.status === 'needs_revision';
+  const isRejected = currentApp.status === 'rejected';
   const isPending = currentApp.status === 'pending';
 
   return (
@@ -107,12 +126,16 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
                 ? 'bg-emerald-500/20 border-emerald-500/50 text-[#00e676]'
                 : isRevision
                 ? 'bg-amber-500/20 border-amber-500/50 text-amber-400'
+                : isRejected
+                ? 'bg-slate-500/20 border-slate-500/50 text-slate-300'
                 : 'bg-emerald-500/10 border-emerald-500/30 text-[#00e676]'
             }`}>
               {isApproved ? (
                 <CheckCircle2 className="w-9 h-9" />
               ) : isRevision ? (
                 <AlertCircle className="w-9 h-9" />
+              ) : isRejected ? (
+                <X className="w-9 h-9" />
               ) : (
                 <Clock className="w-9 h-9 animate-pulse" />
               )}
@@ -124,12 +147,16 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
                   ? 'bg-emerald-500/20 text-[#00e676] border-emerald-500/40'
                   : isRevision
                   ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                  : isRejected
+                  ? 'bg-slate-500/20 text-slate-300 border-slate-500/40'
                   : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
               }`}>
                 {isApproved
                   ? 'Conta Aprovada'
                   : isRevision
                   ? 'Ajuste Solicitado'
+                  : isRejected
+                  ? 'Proposta Recusada'
                   : 'Em Análise de Conformidade'}
               </span>
             </div>
@@ -139,6 +166,8 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
                 ? 'Sua Conta Foi Aprovada!'
                 : isRevision
                 ? 'Ajuste Necessário na Documentação'
+                : isRejected
+                ? 'Sua proposta não foi aprovada'
                 : 'Aguarde a aprovação da sua conta'}
             </h3>
 
@@ -147,6 +176,8 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
                 ? 'Seus documentos e validação facial foram aceitos pela administração.'
                 : isRevision
                 ? 'A administração solicitou que você reenvie ou ajuste dados da sua proposta.'
+                : isRejected
+                ? (currentApp.revisionNotes || 'Sua proposta não foi aprovada.')
                 : 'Sua proposta está em processo de validação de segurança pela administração do LeadsPay.'}
             </p>
           </div>
@@ -198,6 +229,33 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
                     className="w-full mt-2 py-2 px-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-black font-bold text-xs transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <span>Corrigir / Reenviar Documentos</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Rejected Callout (§3.9) — selo cinza, motivo do admin e o
+                botão primário "Enviar nova proposta" (mesmo prop do ajuste). */}
+            {isRejected && (
+              <div className="p-3.5 rounded-2xl bg-slate-500/15 border border-slate-500/40 text-slate-200 space-y-2">
+                <div className="flex items-center gap-2 font-bold text-xs text-slate-300">
+                  <X className="w-4 h-4 text-slate-300" />
+                  <span>Motivo da recusa:</span>
+                </div>
+                <p className="text-xs bg-black/40 p-2.5 rounded-xl border border-white/5 text-slate-100 font-mono">
+                  "{currentApp.revisionNotes || 'Sua proposta não foi aprovada.'}"
+                </p>
+                {onOpenRevision && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenRevision(currentApp);
+                    }}
+                    className="w-full mt-2 py-2 px-3 rounded-xl bg-[#a3e635] hover:bg-[#92d628] text-black font-bold text-xs transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <span>Enviar nova proposta</span>
                     <ArrowRight className="w-3.5 h-3.5" />
                   </button>
                 )}

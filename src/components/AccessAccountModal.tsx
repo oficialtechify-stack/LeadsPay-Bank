@@ -1,145 +1,116 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  ShieldCheck, 
-  X, 
-  Fingerprint, 
-  Lock, 
-  Mail, 
-  ArrowRight, 
-  CheckCircle2, 
+import {
+  ShieldCheck,
+  X,
+  Lock,
+  Mail,
+  ArrowRight,
+  CheckCircle2,
   AlertCircle,
-  UserPlus,
   Loader2
 } from 'lucide-react';
 import { soundEffects } from '../utils/audio';
-import { AccountApplication, UserProfile } from '../types';
-import { 
-  findApplicationByEmailOrCpf, 
-  findUserProfileByEmailOrCpf,
-  getLocalUserApplication,
-  ADMIN_EMAIL,
-  saveRegistrationDraft,
-  clearRegistrationDraft,
-  markLocalProfileApproved
-} from '../services/firebaseBankService';
-import { auth } from '../firebase/config';
+import { ADMIN_EMAIL } from '../services/firebaseBankService';
+import { auth, signInWithEmailAndPassword, sendPasswordResetEmail } from '../firebase/config';
 
 interface AccessAccountModalProps {
   isOpen: boolean;
   onClose: () => void;
   onGoogleSignIn?: () => Promise<void>;
-  onManualAccess: (profile?: UserProfile) => void;
   onOpenRegister: (prefill?: { email?: string; cpf?: string }) => void;
-  onShowPendingApproval: (app: AccountApplication) => void;
+  // DET-1: mensagem inicial do modal (gate do `onApprovedLogin`, §3.5, e
+  // atalho "Área Pix", §3.6). Alimenta o `errorMessage` na abertura.
+  initialMessage?: string;
 }
+
+// Tabela de erros do login manual (§3.2): com a proteção contra enumeração
+// ativada, `signInWithEmailAndPassword` devolve `auth/invalid-credential`
+// tanto para e-mail inexistente quanto para senha errada — `user-not-found`
+// e `wrong-password` não são retornados. Ramo padrão sem vazar detalhe.
+const manualErrorMessage = (code?: string): string => {
+  switch (code) {
+    case 'auth/invalid-credential':
+      return 'E-mail ou senha incorretos.';
+    case 'auth/invalid-email':
+      return 'Verifique o e-mail digitado.';
+    case 'auth/too-many-requests':
+      return 'Muitas tentativas. Aguarde um pouco e tente de novo.';
+    case 'auth/user-disabled':
+      return 'Conta desativada. Fale com o suporte.';
+    case 'auth/operation-not-allowed':
+      return 'O login por e-mail e senha não está ativado. Fale com o suporte.';
+    case 'auth/network-request-failed':
+      return 'Sem conexão. Verifique a internet e tente de novo.';
+    default:
+      return 'Não foi possível entrar. Tente de novo.';
+  }
+};
 
 export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
   isOpen,
   onClose,
   onGoogleSignIn,
-  onManualAccess,
   onOpenRegister,
-  onShowPendingApproval
+  initialMessage
 }) => {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [isSuccess, setIsSuccess] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+  const [isManualLoading, setIsManualLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // §3.3: "Esqueci a senha" — `view: 'login' | 'reset'`, sem modal novo.
+  const [view, setView] = useState<'login' | 'reset'>('login');
+  const [resetEmail, setResetEmail] = useState('');
+  const [isResetLoading, setIsResetLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+
+  // Abertura: estado fresco; a `initialMessage` (se houver) alimenta o erro.
+  useEffect(() => {
+    if (!isOpen) return;
+    setErrorMessage(initialMessage ?? null);
+    setView('login');
+    setResetSent(false);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
+  // §3.5: após `onGoogleSignIn` resolver, mantém a animação de sucesso de
+  // 700ms como hoje e chama `onClose()` — e NADA de `onManualAccess` /
+  // `onShowPendingApproval`. O listener decide a tela.
   const handleGoogleClick = async () => {
     if (!onGoogleSignIn) return;
     try {
       setErrorMessage(null);
       setIsGoogleLoading(true);
       await onGoogleSignIn();
-
-      const currentUser = auth.currentUser;
-      const userEmail = currentUser?.email?.toLowerCase().trim() || '';
-
-      // 1. If admin, grant direct access
-      if (userEmail === ADMIN_EMAIL.toLowerCase()) {
-        clearRegistrationDraft();
-        setIsSuccess(true);
-        soundEffects.playPixSuccess();
-        setTimeout(() => {
-          setIsSuccess(false);
-          setIsGoogleLoading(false);
-          onClose();
-          onManualAccess();
-        }, 700);
-        return;
-      }
-
-      // 2. Search for registered application
-      const app = (currentUser?.uid ? getLocalUserApplication(currentUser.uid) : null) || 
-                  (userEmail ? findApplicationByEmailOrCpf(userEmail) : null);
-
-      if (app) {
+      setIsSuccess(true);
+      soundEffects.playPixSuccess();
+      setTimeout(() => {
+        setIsSuccess(false);
         setIsGoogleLoading(false);
         onClose();
-        if (app.status === 'approved') {
-          clearRegistrationDraft();
-          soundEffects.playPixSuccess();
-          const profile = findUserProfileByEmailOrCpf(userEmail) || findUserProfileByEmailOrCpf(app.cpf);
-          onManualAccess(profile ? markLocalProfileApproved(profile) : undefined);
-        } else {
-          // Status is 'pending' or 'needs_revision': Show pending approval screen!
-          onShowPendingApproval(app);
-        }
-        return;
-      }
-
-      // 3. Search for existing user profile — conta criada antes do sistema de
-      // aprovação não tem carimbo de status; perfil existente vale mesmo sem
-      // ele (carimba como aprovado na hora, em vez de mandar p/ o cadastro).
-      const existingProfile = findUserProfileByEmailOrCpf(userEmail);
-      if (existingProfile) {
-        clearRegistrationDraft();
-        const approvedProfile = markLocalProfileApproved(existingProfile);
-        setIsSuccess(true);
-        soundEffects.playPixSuccess();
-        setTimeout(() => {
-          setIsSuccess(false);
-          setIsGoogleLoading(false);
-          onClose();
-          onManualAccess(approvedProfile);
-        }, 700);
-        return;
-      }
-
-      // 4. User does not have an account!
-      // "quando o usuario apertar em acessar conta se ele nao tiver conta no app mande ele pra abrir uma conta"
-      setIsGoogleLoading(false);
-      onClose();
-
-      // Limpa o rascunho velho ANTES de pré-preencher: sem isso o merge do
-      // saveRegistrationDraft ressuscita os dados da tentativa anterior de
-      // criar conta e o questionário abre com a conta errada.
-      clearRegistrationDraft();
-      // Pre-save Google details to draft
-      saveRegistrationDraft({
-        fullName: currentUser?.displayName || '',
-        preferredName: currentUser?.displayName?.split(' ')[0] || '',
-        email: userEmail,
-        selfiePhoto: currentUser?.photoURL || ''
-      });
-
-      onOpenRegister({ email: userEmail });
+      }, 700);
     } catch (err: unknown) {
       console.error('Google Sign-in error:', err);
       setIsGoogleLoading(false);
       const authErr = err as { code?: string; message?: string };
-      if (authErr?.code !== 'auth/popup-closed-by-user') {
-        setErrorMessage('Não foi possível conectar com o Google. Tente novamente ou use seus dados abaixo.');
+      if (authErr?.code === 'auth/popup-closed-by-user') return;
+      if (authErr?.code === 'auth/account-exists-with-different-credential') {
+        // DET-2: hoje ninguém trata esse código. Sem segunda frase (§3.1,
+        // correção da revisão v3): o vínculo inverso não existe no §3.7.
+        setErrorMessage('Essa conta já tem senha de acesso — entre com e-mail e senha.');
+        return;
       }
+      setErrorMessage('Não foi possível conectar com o Google. Tente novamente ou use seus dados abaixo.');
     }
   };
 
-  const handleManualSubmit = (e: React.FormEvent) => {
+  // §3.2: as 3 portas sem senha foram removidas. O único caminho de
+  // entrada é a chamada ao Auth — senha errada NUNCA entra, nem com perfil
+  // local no aparelho.
+  const handleManualSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanId = identifier.trim();
     if (!cleanId) return;
@@ -147,75 +118,63 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
     setErrorMessage(null);
     const cleanLower = cleanId.toLowerCase();
 
-    // 1. Admin login check
+    // 1. Atalho do admin — REMOVIDO. Com a Q2 decidida (b), o e-mail do
+    // admin é recusado com aviso; nada mais é tentado.
     if (cleanLower === ADMIN_EMAIL.toLowerCase()) {
-      clearRegistrationDraft();
-      setIsSuccess(true);
-      soundEffects.playPixSuccess();
-      setTimeout(() => {
-        setIsSuccess(false);
-        onClose();
-        onManualAccess();
-      }, 700);
+      setErrorMessage('O acesso do administrador é só com o Google.');
       return;
     }
 
-    // 2. Search for registered application
-    const app = findApplicationByEmailOrCpf(cleanId);
-    if (app) {
-      if (app.status === 'approved') {
-        clearRegistrationDraft();
-        setIsSuccess(true);
-        soundEffects.playPixSuccess();
-        setTimeout(() => {
-          setIsSuccess(false);
-          onClose();
-          onManualAccess();
-        }, 700);
-      } else {
-        // Proposal is pending or needs revision -> Show "Aguarde a aprovação da sua conta"
-        onClose();
-        onShowPendingApproval(app);
-      }
-      return;
-    }
-
-    // 3. Search for existing user profile — conta criada antes do sistema de
-    // aprovação não tem carimbo de status; perfil existente vale mesmo sem
-    // ele (carimba como aprovado na hora, em vez de mandar p/ o cadastro).
-    const existingProfile = findUserProfileByEmailOrCpf(cleanId);
-    if (existingProfile) {
-      clearRegistrationDraft();
-      const approvedProfile = markLocalProfileApproved(existingProfile);
-      setIsSuccess(true);
-      soundEffects.playPixSuccess();
-      setTimeout(() => {
-        setIsSuccess(false);
-        onClose();
-        onManualAccess(approvedProfile);
-      }, 700);
-      return;
-    }
-
-    // 4. User does not have an account!
-    // As explicitly requested: redirect to open account!
     const isEmail = cleanId.includes('@');
-    const isCpf = cleanId.replace(/\D/g, '').length >= 11;
+    const digitsOnly = cleanId.replace(/\D/g, '');
 
-    // Limpa o rascunho velho ANTES de pré-preencher: sem isso o merge do
-    // saveRegistrationDraft ressuscita os dados da tentativa anterior de
-    // criar conta e o questionário abre com a conta errada.
-    clearRegistrationDraft();
-    saveRegistrationDraft({
-      email: isEmail ? cleanId : '',
-      cpf: isCpf ? cleanId : ''
-    });
+    // 2. CPF: o Auth não autentica por CPF. Mensagem, sem chamar o Auth.
+    if (!isEmail) {
+      if (digitsOnly.length >= 11) {
+        setErrorMessage('O acesso com senha é pelo e-mail cadastrado; pelo CPF, use o Google.');
+        return;
+      }
+      // DET-6: nem e-mail nem CPF — ramo padrão, sem chamar o Auth.
+      setErrorMessage('Digite um e-mail ou CPF válido.');
+      return;
+    }
 
-    onClose();
-    onOpenRegister({
-      email: isEmail ? cleanId : undefined,
-      cpf: isCpf ? cleanId : undefined
-    });
+    // 3. Chamada ao Auth — o único caminho de entrada.
+    setIsManualLoading(true);
+    try {
+      await signInWithEmailAndPassword(auth, cleanId, password);
+      setIsManualLoading(false);
+      // 4. Após o sign-in: fechar o modal — SÓ `onClose()` (DET-7). Quem
+      // decide para onde o usuário vai é o `onAuthStateChanged` (§3.4).
+      onClose();
+    } catch (err: unknown) {
+      setIsManualLoading(false);
+      const code = (err as { code?: string })?.code;
+      setErrorMessage(manualErrorMessage(code));
+    }
+  };
+
+  // §3.3: "Esqueci a senha" — `sendPasswordResetEmail`. Cópia condicional,
+  // sem promessa: o comportamento do reset sobre conta só-Google não está
+  // confirmado e não é assumido.
+  const handleResetSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanEmail = resetEmail.trim();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setErrorMessage('Verifique o e-mail digitado.');
+      return;
+    }
+    setErrorMessage(null);
+    setIsResetLoading(true);
+    try {
+      await sendPasswordResetEmail(auth, cleanEmail);
+      setResetSent(true);
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      setErrorMessage(manualErrorMessage(code));
+    } finally {
+      setIsResetLoading(false);
+    }
   };
 
   return (
@@ -243,10 +202,12 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
                 </div>
                 <div>
                   <h3 className="text-base font-display font-bold text-white">
-                    Acessar LeadsPay Bank
+                    {view === 'reset' ? 'Redefinir sua senha' : 'Acessar LeadsPay Bank'}
                   </h3>
                   <p className="text-xs text-slate-400">
-                    Acesse sua conta individual ou verifique sua proposta
+                    {view === 'reset'
+                      ? 'Enviamos um link de redefinição para o seu e-mail'
+                      : 'Acesse sua conta individual ou verifique sua proposta'}
                   </p>
                 </div>
               </div>
@@ -258,106 +219,193 @@ export const AccessAccountModal: React.FC<AccessAccountModalProps> = ({
                 </div>
               )}
 
-              {/* 1. GOOGLE SIGN IN BUTTON */}
-              <button
-                type="button"
-                onClick={handleGoogleClick}
-                disabled={isGoogleLoading}
-                className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all shadow-md active:scale-[0.98] cursor-pointer"
-              >
-                {isGoogleLoading ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-slate-700" />
-                ) : (
-                  <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                    <path
-                      fill="#4285F4"
-                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                    />
-                    <path
-                      fill="#34A853"
-                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                    />
-                    <path
-                      fill="#FBBC05"
-                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                    />
-                    <path
-                      fill="#EA4335"
-                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                    />
-                  </svg>
-                )}
-                <span>{isGoogleLoading ? 'Autenticando...' : 'Entrar com o Google'}</span>
-              </button>
+              {view === 'reset' ? (
+                <div className="space-y-3.5 text-left">
+                  {resetSent ? (
+                    <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-center space-y-2">
+                      <p className="text-xs text-emerald-200 leading-relaxed">
+                        Se esse e-mail tiver uma senha cadastrada, você receberá o link de redefinição.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setView('login')}
+                        className="text-xs text-[#a3e635] font-semibold hover:underline cursor-pointer"
+                      >
+                        Voltar para o login
+                      </button>
+                    </div>
+                  ) : (
+                    <form onSubmit={handleResetSubmit} className="space-y-3.5">
+                      <div>
+                        <label className="text-[11px] font-medium text-slate-300 block mb-1">
+                          E-mail cadastrado
+                        </label>
+                        <div className="relative">
+                          <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="email"
+                            required
+                            placeholder="seu@email.com"
+                            value={resetEmail}
+                            onChange={(e) => setResetEmail(e.target.value)}
+                            className="w-full pl-9 pr-3 py-2.5 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none"
+                          />
+                        </div>
+                      </div>
 
-              {/* DIVIDER */}
-              <div className="flex items-center gap-3 my-3 text-[10px] text-slate-500 uppercase tracking-widest font-mono">
-                <div className="flex-1 h-px bg-white/10" />
-                <span>ou acesse com CPF/E-mail</span>
-                <div className="flex-1 h-px bg-white/10" />
-              </div>
+                      <div className="pt-1">
+                        <button
+                          type="submit"
+                          disabled={isResetLoading}
+                          className="w-full py-3 rounded-xl bg-[#a3e635] hover:bg-[#92d628] disabled:opacity-50 text-black font-bold text-xs flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(163,230,53,0.3)] transition-all cursor-pointer"
+                        >
+                          {isResetLoading ? (
+                            <Loader2 className="w-4 h-4 animate-spin text-black" />
+                          ) : (
+                            <span>Enviar link de redefinição</span>
+                          )}
+                        </button>
+                      </div>
+                    </form>
+                  )}
 
-              {/* MANUAL LOGIN FORM */}
-              <form onSubmit={handleManualSubmit} className="space-y-3.5 text-left">
+                  {!resetSent && (
+                    <div className="text-center">
+                      <button
+                        type="button"
+                        onClick={() => setView('login')}
+                        className="text-xs text-slate-400 hover:text-white underline cursor-pointer"
+                      >
+                        Voltar para o login
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
                 <div>
-                  <label className="text-[11px] font-medium text-slate-300 block mb-1">
-                    CPF ou E-mail cadastrado
-                  </label>
-                  <div className="relative">
-                    <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      required
-                      placeholder="000.000.000-00 ou seu@email.com"
-                      value={identifier}
-                      onChange={(e) => setIdentifier(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2.5 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none"
-                    />
+                  {/* 1. GOOGLE SIGN IN BUTTON */}
+                  <button
+                    type="button"
+                    onClick={handleGoogleClick}
+                    disabled={isGoogleLoading}
+                    className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all shadow-md active:scale-[0.98] cursor-pointer"
+                  >
+                    {isGoogleLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-slate-700" />
+                    ) : (
+                      <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                        <path
+                          fill="#4285F4"
+                          d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                        />
+                        <path
+                          fill="#34A853"
+                          d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                        />
+                        <path
+                          fill="#FBBC05"
+                          d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                        />
+                        <path
+                          fill="#EA4335"
+                          d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                        />
+                      </svg>
+                    )}
+                    <span>{isGoogleLoading ? 'Autenticando...' : 'Entrar com o Google'}</span>
+                  </button>
+
+                  {/* DIVIDER */}
+                  <div className="flex items-center gap-3 my-3 text-[10px] text-slate-500 uppercase tracking-widest font-mono">
+                    <div className="flex-1 h-px bg-white/10" />
+                    <span>ou acesse com CPF/E-mail</span>
+                    <div className="flex-1 h-px bg-white/10" />
+                  </div>
+
+                  {/* MANUAL LOGIN FORM */}
+                  <form onSubmit={handleManualSubmit} className="space-y-3.5 text-left">
+                    <div>
+                      <label className="text-[11px] font-medium text-slate-300 block mb-1">
+                        CPF ou E-mail cadastrado
+                      </label>
+                      <div className="relative">
+                        <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          required
+                          placeholder="000.000.000-00 ou seu@email.com"
+                          value={identifier}
+                          onChange={(e) => setIdentifier(e.target.value)}
+                          className="w-full pl-9 pr-3 py-2.5 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-medium text-slate-300 block mb-1">
+                        Senha de acesso
+                      </label>
+                      <div className="relative">
+                        <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="password"
+                          placeholder="••••••"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          className="w-full pl-9 pr-3 py-2.5 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none tracking-widest"
+                        />
+                      </div>
+                      <div className="flex justify-end mt-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setResetEmail(identifier.includes('@') ? identifier : '');
+                            setResetSent(false);
+                            setErrorMessage(null);
+                            setView('reset');
+                          }}
+                          className="text-[11px] text-[#a3e635] hover:underline font-medium cursor-pointer"
+                        >
+                          Esqueci a senha
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="pt-2">
+                      <button
+                        type="submit"
+                        disabled={isManualLoading}
+                        className="w-full py-3 rounded-xl bg-[#a3e635] hover:bg-[#92d628] disabled:opacity-50 text-black font-bold text-xs flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(163,230,53,0.3)] transition-all cursor-pointer"
+                      >
+                        {isManualLoading ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-black" />
+                        ) : (
+                          <>
+                            <span>Acessar Minha Conta</span>
+                            <ArrowRight className="w-4 h-4" />
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* FOOTER SWITCH TO REGISTER */}
+                  <div className="mt-5 pt-3 border-t border-white/10 text-center">
+                    <p className="text-xs text-slate-400">
+                      Ainda não tem conta LeadsPay?{' '}
+                      <button
+                        onClick={() => {
+                          onClose();
+                          onOpenRegister();
+                        }}
+                        className="text-[#a3e635] font-semibold hover:underline cursor-pointer ml-1"
+                      >
+                        Criar conta
+                      </button>
+                    </p>
                   </div>
                 </div>
-
-                <div>
-                  <label className="text-[11px] font-medium text-slate-300 block mb-1">
-                    Senha de acesso
-                  </label>
-                  <div className="relative">
-                    <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="password"
-                      placeholder="••••••"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2.5 bg-black/60 border border-white/10 focus:border-[#a3e635] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none tracking-widest"
-                    />
-                  </div>
-                </div>
-
-                <div className="pt-2">
-                  <button
-                    type="submit"
-                    className="w-full py-3 rounded-xl bg-[#a3e635] hover:bg-[#92d628] text-black font-bold text-xs flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(163,230,53,0.3)] transition-all cursor-pointer"
-                  >
-                    <span>Acessar Minha Conta</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
-                </div>
-              </form>
-
-              {/* FOOTER SWITCH TO REGISTER */}
-              <div className="mt-5 pt-3 border-t border-white/10 text-center">
-                <p className="text-xs text-slate-400">
-                  Ainda não tem conta LeadsPay?{' '}
-                  <button
-                    onClick={() => {
-                      onClose();
-                      onOpenRegister();
-                    }}
-                    className="text-[#a3e635] font-semibold hover:underline cursor-pointer ml-1"
-                  >
-                    Criar conta
-                  </button>
-                </p>
-              </div>
+              )}
             </div>
           ) : (
             <div className="py-8 text-center space-y-3">

@@ -25,9 +25,9 @@ service cloud.firestore {
 
     // KYC & Account Registration Applications
     match /account_applications/{applicationId} {
-      allow list, get: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      allow update: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow list, get: if isAdmin() || (isSignedIn() && request.auth.uid == applicationId);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid && request.resource.data.userId == applicationId;
+      allow update: if isAdmin() || (isSignedIn() && request.auth.uid == applicationId);
       allow delete: if isAdmin();
     }
   }

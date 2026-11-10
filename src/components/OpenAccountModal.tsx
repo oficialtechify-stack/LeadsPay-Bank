@@ -9,6 +9,7 @@ import {
   Calendar, 
   MapPin, 
   CreditCard, 
+  Lock,
   ArrowRight, 
   ArrowLeft, 
   CheckCircle2, 
@@ -34,7 +35,7 @@ import {
   findApplicationByEmailOrCpf,
   findUserProfileByEmailOrCpf
 } from '../services/firebaseBankService';
-import { auth } from '../firebase/config';
+import { auth, createUserWithEmailAndPassword } from '../firebase/config';
 
 interface OpenAccountModalProps {
   isOpen: boolean;
@@ -93,47 +94,27 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
   const [isGoogleConnected, setIsGoogleConnected] = useState(false);
   const [showFieldsDirectly, setShowFieldsDirectly] = useState(false);
 
+  // §3.1 caminho (b): identidade por e-mail+senha. A senha vive SÓ no estado
+  // do componente — NUNCA entra no rascunho nem no localStorage (o tipo
+  // `RegistrationDraft` não tem campo de senha — conferido por `grep`).
+  const [authPreference, setAuthPreference] = useState<'google' | 'email_password'>('google');
+  const [registrationPassword, setRegistrationPassword] = useState('');
+  const [registrationPasswordConfirm, setRegistrationPasswordConfirm] = useState('');
+  // Erro `email-already-in-use` no envio final: mostra os dois botões.
+  const [emailConflict, setEmailConflict] = useState(false);
+
   // Initialize and restore pre-saved draft or existing application
+  // §3.1 (ii), correção da revisão v3 — A ORDEM IMPORTA: (1) o rascunho é
+  // restaurado PRIMEIRO, também para usuário logado (o código antigo só
+  // restaurava quando não havia sessão — era o IMP-1); (2) o prefill do
+  // Google só preenche os campos que CONTINUAM vazios — o rascunho (dado
+  // digitado mais recente) vence o prefill; (3) a proposta com status
+  // `needs_revision` **ou `rejected`** preenche por cima com
+  // `populateFieldsFromApp` (dado da proposta é mais novo que o rascunho).
   useEffect(() => {
     if (!isOpen) return;
 
-    if (auth.currentUser?.email) {
-      setIsGoogleConnected(true);
-      setShowFieldsDirectly(true);
-      if (!email) setEmail(auth.currentUser.email);
-      if (!fullName && auth.currentUser.displayName) {
-        setFullName(auth.currentUser.displayName);
-        setPreferredName(auth.currentUser.displayName.split(' ')[0]);
-      }
-      if (!selfiePhoto && auth.currentUser.photoURL) {
-        setSelfiePhoto(auth.currentUser.photoURL);
-      }
-    }
-
-    // Check if current user already has an application
-    const currentUserId = auth.currentUser?.uid;
-    if (currentUserId) {
-      const local = getLocalUserApplication(currentUserId);
-      if (local) {
-        setExistingApp(local);
-        if (local.status === 'needs_revision') {
-          populateFieldsFromApp(local);
-        }
-        return;
-      }
-
-      const unsub = subscribeToUserApplication(currentUserId, (app) => {
-        if (app) {
-          setExistingApp(app);
-          if (app.status === 'needs_revision') {
-            populateFieldsFromApp(app);
-          }
-        }
-      });
-      return unsub;
-    }
-
-    // Otherwise, restore pre-saved draft so user doesn't lose any progress
+    // 1. Restore do rascunho primeiro — para logado e não-logado.
     const draft = getRegistrationDraft();
     if (draft) {
       if (draft.fullName) setFullName(draft.fullName);
@@ -159,7 +140,47 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
       setHasDraftRestored(true);
     }
 
-    // Pre-fill from initialIdentifier if passed
+    // 2. Pré-preenchimento do Google, SÓ nos campos que continuam vazios
+    // (sem rascunho E sem valor já digitado nesta sessão).
+    const googleUser = auth.currentUser;
+    if (googleUser?.email) {
+      setIsGoogleConnected(true);
+      setShowFieldsDirectly(true);
+      setAuthPreference('google');
+      if (!draft?.email && !email) setEmail(googleUser.email);
+      if (!draft?.fullName && !fullName && googleUser.displayName) {
+        setFullName(googleUser.displayName);
+        setPreferredName(googleUser.displayName.split(' ')[0]);
+      }
+      if (!draft?.selfiePhoto && !selfiePhoto && googleUser.photoURL) {
+        setSelfiePhoto(googleUser.photoURL);
+      }
+    }
+
+    // 3. Proposta existente (local ou do servidor): `needs_revision` ou
+    // `rejected` preenche por cima — o dado da proposta é mais novo.
+    const currentUserId = auth.currentUser?.uid;
+    let unsubscribeApp: (() => void) | undefined;
+    if (currentUserId) {
+      const local = getLocalUserApplication(currentUserId);
+      if (local) {
+        setExistingApp(local);
+        if (local.status === 'needs_revision' || local.status === 'rejected') {
+          populateFieldsFromApp(local);
+        }
+      } else {
+        unsubscribeApp = subscribeToUserApplication(currentUserId, (app) => {
+          if (app) {
+            setExistingApp(app);
+            if (app.status === 'needs_revision' || app.status === 'rejected') {
+              populateFieldsFromApp(app);
+            }
+          }
+        });
+      }
+    }
+
+    // 4. Pre-fill from initialIdentifier if passed
     if (initialIdentifier?.email) {
       setEmail(initialIdentifier.email);
       setShowFieldsDirectly(true);
@@ -168,6 +189,8 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
       setCpf(initialIdentifier.cpf);
       setShowFieldsDirectly(true);
     }
+
+    return unsubscribeApp;
   }, [isOpen]);
 
   // CONTINUOUS AUTO-SAVE: Pre-save all fields, pictures and step to localStorage
@@ -326,16 +349,22 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
         }
 
         // 3. User authenticated via Google: pre-fill fields & show the form!
-        if (user.displayName) {
+        // §3.1 (ii): o prefill só preenche campos vazios — o rascunho (dado
+        // digitado) vence. A senha digitada no caminho (b) é descartada na
+        // troca para o Google (a sessão Google é a identidade agora).
+        if (user.displayName && !fullName) {
           setFullName(user.displayName);
           setPreferredName(user.displayName.split(' ')[0]);
         }
-        if (user.email) {
+        if (user.email && !email) {
           setEmail(user.email);
         }
         if (user.photoURL && !selfiePhoto) {
           setSelfiePhoto(user.photoURL);
         }
+        setAuthPreference('google');
+        setRegistrationPassword('');
+        setRegistrationPasswordConfirm('');
         setIsGoogleConnected(true);
         setShowFieldsDirectly(true);
         soundEffects.playPixSuccess();
@@ -395,6 +424,19 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
       setErrorMessage('Informe o bairro.');
       return false;
     }
+    // §3.1 caminho (b): ao avançar da etapa 1, validar só o formato — e-mail
+    // válido (já acima), senha ≥6 (Q4) e confirmação igual. Nada de conta
+    // criada aqui: a conta Auth só nasce no envio final.
+    if (authPreference === 'email_password' && !auth.currentUser) {
+      if (registrationPassword.length < 6) {
+        setErrorMessage('A senha de acesso precisa ter no mínimo 6 caracteres.');
+        return false;
+      }
+      if (registrationPassword !== registrationPasswordConfirm) {
+        setErrorMessage('A confirmação da senha não confere com a senha digitada.');
+        return false;
+      }
+    }
     return true;
   };
 
@@ -425,14 +467,35 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
   // Handle final submission to Admin
   const handleFinalSubmit = async () => {
     setErrorMessage(null);
+    setEmailConflict(false);
 
-    // Sem login com o Google a proposta NUNCA chega ao servidor: as regras
-    // do Firestore negam a escrita de convidado e o erro era engolido,
-    // exibindo sucesso falso. Exige o login antes de enviar — o rascunho
-    // do formulário já está auto-salvo, então voltar p/ a etapa 1 não
-    // perde nada.
+    // §3.1 passo 2: sem sessão e no caminho (b), a conta Auth nasce AGORA,
+    // com o MESMO e-mail da proposta (do estado `email`, sem janela de
+    // divergência). A senha nunca saiu do estado do componente.
+    if (!auth.currentUser && authPreference === 'email_password') {
+      try {
+        await createUserWithEmailAndPassword(auth, email.trim(), registrationPassword);
+      } catch (err: unknown) {
+        const code = (err as { code?: string })?.code;
+        if (code === 'auth/email-already-in-use') {
+          // Cópia exata do §3.1 — nada de "entre com a senha" (conta
+          // só-Google não tem senha). Os dois botões aparecem abaixo.
+          setErrorMessage('Esse e-mail já tem uma conta. Se você criou com o Google, entre com o Google. Se você já tem senha de acesso, entre com ela — ou redefina em \'Esqueci a senha\'.');
+          setEmailConflict(true);
+          return;
+        }
+        console.error('Create account error:', err);
+        setErrorMessage('Não foi possível criar sua conta de acesso. Tente de novo.');
+        return;
+      }
+    }
+
+    // Sem login a proposta NUNCA chega ao servidor: as regras do Firestore
+    // negam a escrita de convidado e o erro era engolido, exibindo sucesso
+    // falso. O portão aceita qualquer sessão (Google ou a recém-criada por
+    // senha) — só o texto do erro muda (§3.1).
     if (!auth.currentUser) {
-      setErrorMessage('Para enviar sua proposta, entre com o Google primeiro — sem login ela não chega ao servidor e ninguém vê sua proposta.');
+      setErrorMessage('Para enviar sua proposta, entre com o Google ou crie com e-mail e senha primeiro — sem login ela não chega ao servidor e ninguém vê sua proposta.');
       setStep(1);
       setShowFieldsDirectly(false);
       return;
@@ -470,6 +533,10 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
       setIsSubmitting(false);
       setIsSubmittedSuccess(true);
       clearRegistrationDraft();
+      // A senha cumpriu o papel (passo 2) — sai do estado junto com o
+      // rascunho, sem nunca ter sido persistida.
+      setRegistrationPassword('');
+      setRegistrationPasswordConfirm('');
       onApplicationSubmitted?.(app);
       soundEffects.playPixSuccess();
       confetti({
@@ -519,36 +586,42 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
               <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
                 existingApp.status === 'pending'
                   ? 'bg-amber-500/20 border border-amber-500/40 text-amber-400'
-                  : existingApp.status === 'needs_revision'
+                  : existingApp.status === 'needs_revision' || existingApp.status === 'rejected'
                   ? 'bg-rose-500/20 border border-rose-500/40 text-rose-400'
                   : 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-400'
               }`}>
                 {existingApp.status === 'pending' && <Clock className="w-6 h-6 animate-pulse" />}
-                {existingApp.status === 'needs_revision' && <AlertCircle className="w-6 h-6" />}
+                {(existingApp.status === 'needs_revision' || existingApp.status === 'rejected') && <AlertCircle className="w-6 h-6" />}
                 {existingApp.status === 'approved' && <CheckCircle2 className="w-6 h-6" />}
               </div>
               <div>
                 <h3 className="text-base font-display font-bold text-white">
                   {existingApp.status === 'pending' && 'Proposta em Análise pelo Administrador'}
                   {existingApp.status === 'needs_revision' && 'Ajuste Solicitado pelo Administrador'}
+                  {existingApp.status === 'rejected' && 'Proposta Recusada pelo Administrador'}
                   {existingApp.status === 'approved' && 'Conta LeadsPay Aprovada!'}
                 </h3>
                 <p className="text-xs text-slate-400">
                   {existingApp.status === 'pending' && 'Nossa equipe de compliance está avaliando seus dados e documentos.'}
                   {existingApp.status === 'needs_revision' && 'O administrador solicitou a revisão de informações abaixo.'}
+                  {existingApp.status === 'rejected' && 'O administrador não aprovou sua proposta. Veja o motivo abaixo e envie uma nova proposta.'}
                   {existingApp.status === 'approved' && 'Parabéns! Sua conta já está liberada para acesso.'}
                 </p>
               </div>
             </div>
 
-            {/* Admin Revision Notes Alert */}
-            {existingApp.status === 'needs_revision' && existingApp.revisionNotes && (
+            {/* Admin Revision Notes Alert — `needs_revision` e `rejected`
+                (§3.9): mesmo selo, mesma caixa de motivo e o mesmo botão. A
+                rejeitada sem motivo mostra o texto padrão, para o botão de
+                reenvio nunca ficar fora de alcance. */}
+            {(existingApp.status === 'needs_revision' || existingApp.status === 'rejected') &&
+              (existingApp.revisionNotes || existingApp.status === 'rejected') && (
               <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 space-y-1.5">
                 <span className="text-xs font-semibold text-rose-400 uppercase tracking-wide flex items-center gap-1.5">
                   <AlertCircle className="w-4 h-4" /> Mensagem do Administrador:
                 </span>
                 <p className="text-xs text-white bg-black/40 p-2.5 rounded-xl border border-white/10 font-mono">
-                  "{existingApp.revisionNotes}"
+                  "{existingApp.revisionNotes || 'Sua proposta não foi aprovada.'}"
                 </p>
                 {existingApp.requestedRevisions && existingApp.requestedRevisions.length > 0 && (
                   <div className="pt-2">
@@ -692,9 +765,37 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
             </div>
 
             {errorMessage && (
-              <div className="mb-3 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center gap-2 shrink-0">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{errorMessage}</span>
+              <div className="mb-3 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs shrink-0">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{errorMessage}</span>
+                </div>
+                {emailConflict && (
+                  <div className="flex gap-2 mt-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEmailConflict(false);
+                        setErrorMessage(null);
+                        void handleGoogleSignInForRegistration();
+                      }}
+                      className="flex-1 py-2 rounded-lg bg-white hover:bg-slate-100 text-slate-900 font-bold text-[11px] cursor-pointer"
+                    >
+                      Entrar com o Google
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEmailConflict(false);
+                        onClose();
+                        onOpenLogin?.();
+                      }}
+                      className="flex-1 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white font-bold text-[11px] cursor-pointer"
+                    >
+                      Ir para o login
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -734,10 +835,10 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
 
                       <div>
                         <h4 className="text-base sm:text-lg font-display font-bold text-white">
-                          Criar Conta com o Google
+                          Criar sua conta
                         </h4>
                         <p className="text-xs text-slate-300 mt-1 max-w-xs mx-auto leading-relaxed">
-                          Aperte em <strong className="text-[#00e676]">Logar com o Google</strong> para conectar seus dados e liberar o preenchimento da sua conta.
+                          Escolha como entrar na sua conta depois da aprovação: com o Google ou com e-mail e senha.
                         </p>
                       </div>
 
@@ -778,15 +879,24 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
                         )}
                       </button>
 
-                      <div className="pt-2">
-                        <button
-                          type="button"
-                          onClick={() => setShowFieldsDirectly(true)}
-                          className="text-xs text-slate-400 hover:text-white underline cursor-pointer"
-                        >
-                          Ou preencher formulário manualmente sem o Google
-                        </button>
+                      {/* Caminho (b) — Criar com e-mail e senha (§3.1) */}
+                      <div className="flex items-center gap-3 text-[10px] text-slate-500 uppercase tracking-widest font-mono">
+                        <div className="flex-1 h-px bg-white/10" />
+                        <span>ou</span>
+                        <div className="flex-1 h-px bg-white/10" />
                       </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuthPreference('email_password');
+                          setShowFieldsDirectly(true);
+                        }}
+                        className="w-full py-3.5 px-4 rounded-xl bg-white/10 hover:bg-white/15 border border-white/20 active:scale-[0.98] text-white font-bold text-sm flex items-center justify-center gap-2.5 transition-all cursor-pointer"
+                      >
+                        <Lock className="w-4 h-4 text-[#00e676]" />
+                        <span>Criar com e-mail e senha</span>
+                      </button>
                     </motion.div>
                   ) : (
                     <motion.div
@@ -948,6 +1058,49 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
                       />
                     </div>
                   </div>
+
+                  {/* Senha de acesso — caminho (b), §3.1. A senha vive só no
+                      estado do componente: nunca entra no rascunho. */}
+                  {authPreference === 'email_password' && !auth.currentUser && (
+                    <>
+                      <div>
+                        <label className="text-[11px] font-medium text-slate-300 block mb-1">
+                          Senha de acesso <span className="text-[#00e676]">*</span>
+                        </label>
+                        <div className="relative">
+                          <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="password"
+                            required
+                            placeholder="Mínimo de 6 caracteres"
+                            value={registrationPassword}
+                            onChange={(e) => setRegistrationPassword(e.target.value)}
+                            className="w-full pl-9 pr-3 py-2 bg-black/60 border border-white/10 focus:border-[#00e676] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none tracking-widest"
+                          />
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          É com ela que você vai entrar na sua conta depois da aprovação.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="text-[11px] font-medium text-slate-300 block mb-1">
+                          Confirmar senha de acesso <span className="text-[#00e676]">*</span>
+                        </label>
+                        <div className="relative">
+                          <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="password"
+                            required
+                            placeholder="Digite a senha de novo"
+                            value={registrationPasswordConfirm}
+                            onChange={(e) => setRegistrationPasswordConfirm(e.target.value)}
+                            className="w-full pl-9 pr-3 py-2 bg-black/60 border border-white/10 focus:border-[#00e676] rounded-xl text-xs text-white placeholder:text-slate-600 outline-none tracking-widest"
+                          />
+                        </div>
+                      </div>
+                    </>
+                  )}
 
                   {/* ENDEREÇO SECTION */}
                   <div className="pt-2 border-t border-white/10">
@@ -1220,6 +1373,9 @@ export const OpenAccountModal: React.FC<OpenAccountModalProps> = ({
                   onClick={() => {
                     if (step === 1) {
                       if (!showFieldsDirectly && !isGoogleConnected) {
+                        // Revela o formulário pelo caminho (b) — o mesmo que
+                        // o antigo "preencher manualmente sem o Google".
+                        setAuthPreference('email_password');
                         setShowFieldsDirectly(true);
                         return;
                       }

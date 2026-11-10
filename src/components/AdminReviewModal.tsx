@@ -85,6 +85,13 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
   const [isRevisionOpen, setIsRevisionOpen] = useState(false);
   const [revisionNotes, setRevisionNotes] = useState('');
   const [selectedRevisionFields, setSelectedRevisionFields] = useState<string[]>([]);
+
+  // Reject Modal State (§3.9): espelha o fluxo de revisão — o motivo é
+  // obrigatório e `rejectApplication` recebe os 3 args, no mesmo padrão de
+  // `requestApplicationRevision` (o texto do plano escreve 2 args, mas a
+  // assinatura é `(applicationId, userId, reason)`).
+  const [isRejectOpen, setIsRejectOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
 
   const isAdmin = currentUserEmail?.toLowerCase().trim() === ADMIN_EMAIL;
@@ -222,6 +229,28 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
       setTimeout(() => setActionSuccessMsg(null), 4000);
     } catch (err) {
       console.error('Error requesting revision:', err);
+    }
+  };
+
+  // Admin Action: Reject Application (§3.9 — fecha IMP-2: sem este botão,
+  // o status `rejected` era inalcançável pela UI e o §9 caso 12 não era
+  // executável sem editar o Firestore no console).
+  const handleReject = async () => {
+    if (!selectedApp || !rejectReason.trim()) return;
+
+    try {
+      await rejectApplication(
+        selectedApp.id,
+        selectedApp.userId,
+        rejectReason.trim()
+      );
+      soundEffects.playPixSuccess();
+      setIsRejectOpen(false);
+      setRejectReason('');
+      setActionSuccessMsg(`Proposta de ${selectedApp.fullName} RECUSADA.`);
+      setTimeout(() => setActionSuccessMsg(null), 4000);
+    } catch (err) {
+      console.error('Error rejecting application:', err);
     }
   };
 
@@ -606,6 +635,14 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
                           >
                             <AlertTriangle className="w-3.5 h-3.5" />
                             <span>Pedir Ajuste</span>
+                          </button>
+
+                          <button
+                            onClick={() => setIsRejectOpen(true)}
+                            className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                            <span>Recusar</span>
                           </button>
 
                           <button
@@ -1136,6 +1173,60 @@ export const AdminReviewModal: React.FC<AdminReviewModalProps> = ({
                 >
                   <Send className="w-3.5 h-3.5" />
                   <span>Enviar Solicitação</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL RECUSAR PROPOSTA (§3.9) — espelha o modal de revisão */}
+        {isRejectOpen && selectedApp && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
+            <div className="w-full max-w-lg bg-[#0e1611] border border-rose-500/50 rounded-3xl p-6 shadow-2xl text-white space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                <div className="flex items-center gap-2">
+                  <X className="w-5 h-5 text-rose-400" />
+                  <h3 className="font-bold text-sm">Recusar Proposta</h3>
+                </div>
+                <button onClick={() => setIsRejectOpen(false)} className="text-slate-400 hover:text-white">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-xs text-slate-300">
+                O cliente <strong>{selectedApp.fullName}</strong> verá que a proposta foi recusada, com o motivo abaixo. Ele poderá enviar uma nova proposta.
+              </p>
+
+              {/* Reason text (mandatory) */}
+              <div>
+                <label className="text-[11px] font-medium text-slate-300 block mb-1">
+                  Motivo da recusa (obrigatório):
+                </label>
+                <textarea
+                  rows={3}
+                  placeholder="Ex: Os documentos enviados não conferem com os dados cadastrais e não foi possível validar a identidade."
+                  value={rejectReason}
+                  onChange={(e) => setRejectReason(e.target.value)}
+                  className="w-full p-2.5 bg-black/60 border border-white/10 focus:border-rose-500 rounded-xl text-xs text-white placeholder:text-slate-600 outline-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsRejectOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-medium cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={!rejectReason.trim()}
+                  onClick={handleReject}
+                  className="px-5 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>Recusar Proposta</span>
                 </button>
               </div>
             </div>

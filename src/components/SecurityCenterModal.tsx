@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { 
   ShieldCheck, 
@@ -8,12 +8,16 @@ import {
   Scan, 
   MapPin, 
   KeyRound, 
+  Lock,
+  Loader2,
   Laptop, 
   Sliders, 
   Check, 
   AlertTriangle 
 } from 'lucide-react';
 import { UserProfile } from '../types';
+import { auth, EmailAuthProvider, linkWithCredential, reauthenticateWithCredential, updatePassword } from '../firebase/config';
+import { ADMIN_EMAIL } from '../services/firebaseBankService';
 
 interface SecurityCenterModalProps {
   isOpen: boolean;
@@ -41,7 +45,108 @@ export const SecurityCenterModal: React.FC<SecurityCenterModalProps> = ({
     { id: string; name: string; type: 'phone' | 'laptop'; location: string; status: string; isCurrent: boolean }[]
   >([]);
 
+  // §3.7 "Senha de acesso" — o estado do provedor é lido na abertura do
+  // modal e atualizado após o vínculo (o `linkWithCredential` muda o
+  // `providerData` do usuário, mas sem re-render o modal não saberia).
+  const [passwordLinked, setPasswordLinked] = useState(false);
+  const [showDefinePassword, setShowDefinePassword] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordMessage, setPasswordMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+  const [isPasswordSaving, setIsPasswordSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setPasswordLinked(auth.currentUser?.providerData.some(p => p.providerId === 'password') ?? false);
+    setShowDefinePassword(false);
+    setShowChangePassword(false);
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordMessage(null);
+  }, [isOpen]);
+
   if (!isOpen) return null;
+
+  // Visibilidade das linhas (§3.7): linha 1 só para quem está logado com o
+  // Google e ainda não tem o provedor e-mail/senha — e nunca para o admin
+  // (Q2: admin é só-Google; uma senha dele seria morta no login manual).
+  const isAdminUser = (auth.currentUser?.email?.toLowerCase() || '') === ADMIN_EMAIL.toLowerCase();
+  const hasGoogleProvider = auth.currentUser?.providerData.some(p => p.providerId === 'google.com') ?? false;
+  const showDefineLine = hasGoogleProvider && !passwordLinked && !isAdminUser;
+
+  const handleDefinePassword = async () => {
+    const user = auth.currentUser;
+    if (!user || !user.email) return;
+    if (newPassword.length < 6) {
+      setPasswordMessage({ type: 'error', text: 'A senha de acesso precisa ter no mínimo 6 caracteres.' });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordMessage({ type: 'error', text: 'A confirmação da senha não confere com a senha digitada.' });
+      return;
+    }
+    setIsPasswordSaving(true);
+    setPasswordMessage(null);
+    try {
+      // `linkWithCredential` ADICIONA o provedor e-mail/senha ao UID que já
+      // existe — a conta entra pelos dois caminhos com o mesmo UID.
+      await linkWithCredential(user, EmailAuthProvider.credential(user.email, newPassword));
+      setPasswordLinked(true);
+      setShowDefinePassword(false);
+      setNewPassword('');
+      setConfirmPassword('');
+      setPasswordMessage({ type: 'success', text: 'Senha de acesso definida. Agora você também entra com e-mail e senha.' });
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      setPasswordMessage({
+        type: 'error',
+        text: code === 'auth/requires-recent-login'
+          ? 'Sua sessão expirou para essa ação. Saia e entre com o Google de novo.'
+          : 'Não foi possível definir a senha. Tente de novo.'
+      });
+    } finally {
+      setIsPasswordSaving(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    const user = auth.currentUser;
+    if (!user || !user.email) return;
+    if (newPassword.length < 6) {
+      setPasswordMessage({ type: 'error', text: 'A senha de acesso precisa ter no mínimo 6 caracteres.' });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordMessage({ type: 'error', text: 'A confirmação da senha não confere com a senha digitada.' });
+      return;
+    }
+    setIsPasswordSaving(true);
+    setPasswordMessage(null);
+    try {
+      await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, currentPassword));
+      await updatePassword(user, newPassword);
+      setShowChangePassword(false);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setPasswordMessage({ type: 'success', text: 'Senha de acesso alterada.' });
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      setPasswordMessage({
+        type: 'error',
+        text: code === 'auth/invalid-credential'
+          ? 'Senha atual incorreta.'
+          : code === 'auth/requires-recent-login'
+          ? 'Sua sessão expirou para essa ação. Saia e entre de novo.'
+          : 'Não foi possível alterar a senha. Tente de novo.'
+      });
+    } finally {
+      setIsPasswordSaving(false);
+    }
+  };
 
   const handleRevokeDevice = (id: string) => {
     onRequestBiometric('Revogar acesso do dispositivo', () => {
@@ -196,6 +301,111 @@ export const SecurityCenterModal: React.FC<SecurityCenterModalProps> = ({
               )}
             </div>
           </div>
+
+          {/* Senha de acesso (§3.7) — o botão "Alterar senha do app ou PIN
+              do cartão" abaixo trata de PIN do cartão e NÃO é tocado. */}
+          {showDefineLine && (
+            <div className="pt-2 space-y-2">
+              <button
+                onClick={() => {
+                  setShowDefinePassword(v => !v);
+                  setShowChangePassword(false);
+                  setPasswordMessage(null);
+                }}
+                className="w-full py-2.5 bg-[#f4f4f5] hover:bg-zinc-200 text-zinc-700 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border border-black/[0.06] transition-colors"
+              >
+                <Lock className="w-3.5 h-3.5 text-[#00a854]" />
+                <span>Definir senha de acesso</span>
+              </button>
+              {showDefinePassword && (
+                <div className="p-3 bg-[#f4f4f5] border border-black/[0.06] rounded-2xl space-y-2">
+                  <p className="text-[11px] text-zinc-500 leading-relaxed">
+                    Depois de definir, você entra também com e-mail e senha — a conta continua a mesma.
+                  </p>
+                  <input
+                    type="password"
+                    placeholder="Nova senha (mínimo 6 caracteres)"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-black/10 focus:border-[#00a854] rounded-xl text-xs text-zinc-950 placeholder:text-zinc-400 outline-none tracking-widest"
+                  />
+                  <input
+                    type="password"
+                    placeholder="Confirmar nova senha"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-black/10 focus:border-[#00a854] rounded-xl text-xs text-zinc-950 placeholder:text-zinc-400 outline-none tracking-widest"
+                  />
+                  <button
+                    onClick={handleDefinePassword}
+                    disabled={isPasswordSaving}
+                    className="w-full py-2.5 bg-[#00e676] hover:bg-[#00c853] disabled:opacity-50 text-black rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors"
+                  >
+                    {isPasswordSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Salvar senha de acesso</span>}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {passwordLinked && (
+            <div className="pt-2 space-y-2">
+              <button
+                onClick={() => {
+                  setShowChangePassword(v => !v);
+                  setShowDefinePassword(false);
+                  setPasswordMessage(null);
+                }}
+                className="w-full py-2.5 bg-[#f4f4f5] hover:bg-zinc-200 text-zinc-700 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border border-black/[0.06] transition-colors"
+              >
+                <Lock className="w-3.5 h-3.5 text-[#00a854]" />
+                <span>Alterar senha de acesso</span>
+              </button>
+              {showChangePassword && (
+                <div className="p-3 bg-[#f4f4f5] border border-black/[0.06] rounded-2xl space-y-2">
+                  <input
+                    type="password"
+                    placeholder="Senha atual"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-black/10 focus:border-[#00a854] rounded-xl text-xs text-zinc-950 placeholder:text-zinc-400 outline-none tracking-widest"
+                  />
+                  <input
+                    type="password"
+                    placeholder="Nova senha (mínimo 6 caracteres)"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-black/10 focus:border-[#00a854] rounded-xl text-xs text-zinc-950 placeholder:text-zinc-400 outline-none tracking-widest"
+                  />
+                  <input
+                    type="password"
+                    placeholder="Confirmar nova senha"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-black/10 focus:border-[#00a854] rounded-xl text-xs text-zinc-950 placeholder:text-zinc-400 outline-none tracking-widest"
+                  />
+                  <button
+                    onClick={handleChangePassword}
+                    disabled={isPasswordSaving}
+                    className="w-full py-2.5 bg-[#00e676] hover:bg-[#00c853] disabled:opacity-50 text-black rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors"
+                  >
+                    {isPasswordSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Alterar senha</span>}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {passwordMessage && (
+            <div className={`p-2.5 rounded-xl text-xs flex items-center gap-2 ${
+              passwordMessage.type === 'error'
+                ? 'bg-rose-500/10 border border-rose-500/30 text-rose-600'
+                : 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-700'
+            }`}>
+              {passwordMessage.type === 'error' ? <AlertTriangle className="w-4 h-4 shrink-0" /> : <Check className="w-4 h-4 shrink-0" />}
+              <span>{passwordMessage.text}</span>
+            </div>
+          )}
 
           {/* Quick Password Reset button */}
           <div className="pt-2">

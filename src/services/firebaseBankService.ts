@@ -6,6 +6,7 @@ import {
   signOut,
   doc,
   getDoc,
+  getDocs,
   setDoc,
   updateDoc,
   collection,
@@ -266,14 +267,24 @@ export function saveLocalCards(uid: string, cards: VirtualCard[]): void {
 }
 
 /**
- * Sign in using Google Auth Popup and load or initialize individual user account
+ * Sign in using Google Auth Popup.
+ *
+ * Contrato novo (§3.4, fecha IMP-6): SAI a escrita do doc `users/{uid}` e a
+ * criação do cartão no servidor — o documento passa a existir SÓ via
+ * `approveApplicationAndCreateAccount` (e via o `handleAccountCreated`
+ * morto, intocado, §7). FICA: a leitura `getDoc` e o cache local quando o
+ * doc existe no servidor. `profile` é o que existe (servidor ou local) ou
+ * `null` quando não há conta — "perfil existe" sozinho nunca mais é sinal
+ * de aprovação. No `else` (sem doc no servidor) NÃO cria perfil local. No
+ * `catch` (erro de leitura) só mantém o cache local que já existe; nunca
+ * cria perfil/cartão local novo.
  */
-export async function signInWithGoogle(): Promise<{ user: User; profile: UserProfile }> {
+export async function signInWithGoogle(): Promise<{ user: User; profile: UserProfile | null }> {
   const result = await signInWithPopup(auth, googleProvider);
   const firebaseUser = result.user;
   const userDocRef = doc(db, 'users', firebaseUser.uid);
 
-  let profile: UserProfile | null = getLocalUserProfile(firebaseUser.uid);
+  let profile: UserProfile | null = null;
 
   try {
     const docSnap = await getDoc(userDocRef);
@@ -281,38 +292,14 @@ export async function signInWithGoogle(): Promise<{ user: User; profile: UserPro
       profile = docSnap.data() as UserProfile;
       profile.uid = firebaseUser.uid;
       saveLocalUserProfile(firebaseUser.uid, profile);
-    } else {
-      if (!profile) {
-        profile = createInitialUserProfile({
-          uid: firebaseUser.uid,
-          displayName: firebaseUser.displayName,
-          email: firebaseUser.email,
-          photoURL: firebaseUser.photoURL
-        });
-      }
-      saveLocalUserProfile(firebaseUser.uid, profile);
-
-      // Attempt to save in Firestore
-      await setDoc(userDocRef, profile);
-
-      const initialCard = createDefaultVirtualCard(firebaseUser.uid, profile.name);
-      saveLocalCards(firebaseUser.uid, [initialCard]);
-      await setDoc(doc(db, 'users', firebaseUser.uid, 'cards', initialCard.id), initialCard);
     }
+    // Sem doc no servidor: profile fica null — o listener decide o ramo C
+    // (cadastro) com a decisão do servidor, não com cache inventado.
   } catch (error) {
-    console.warn('Firestore write warning (rules may be pending deployment in Firebase Console):', error);
-    // If Firestore rules denied write, ensure individual user profile is safely active in memory & local storage
-    if (!profile) {
-      profile = createInitialUserProfile({
-        uid: firebaseUser.uid,
-        displayName: firebaseUser.displayName,
-        email: firebaseUser.email,
-        photoURL: firebaseUser.photoURL
-      });
-      saveLocalUserProfile(firebaseUser.uid, profile);
-      const initialCard = createDefaultVirtualCard(firebaseUser.uid, profile.name);
-      saveLocalCards(firebaseUser.uid, [initialCard]);
-    }
+    console.warn('Firestore read warning (using local storage fallback):', error);
+    // Mantém o cache local que já existe, se houver — é o cache offline
+    // legítimo de um login anterior. Nunca cria perfil/cartão local novo.
+    profile = getLocalUserProfile(firebaseUser.uid);
   }
 
   return { user: firebaseUser, profile };
@@ -323,6 +310,39 @@ export async function signInWithGoogle(): Promise<{ user: User; profile: UserPro
  */
 export async function logOut(): Promise<void> {
   await signOut(auth);
+}
+
+/**
+ * Leituras one-shot do servidor (§3.4). Mesmo padrão do `getDoc` que o
+ * `signInWithGoogle` já usa. Lançam o erro se a leitura falhar — o
+ * chamador decide pelo código do erro (`permission-denied` = erro de regra,
+ * nunca fallback silencioso; `unavailable` / `network-request-failed` =
+ * offline). Com a regra corrigida (§3.4), o `get` de um documento
+ * inexistente é permitido e devolve `null` — nunca `permission-denied`.
+ */
+export async function getServerApplication(uid: string): Promise<AccountApplication | null> {
+  const snap = await getDoc(doc(db, 'account_applications', uid));
+  return snap.exists() ? (snap.data() as AccountApplication) : null;
+}
+
+export async function getServerProfile(uid: string): Promise<UserProfile | null> {
+  const snap = await getDoc(doc(db, 'users', uid));
+  return snap.exists() ? (snap.data() as UserProfile) : null;
+}
+
+/**
+ * One-shot da subcoleção `cards` (§3.4, regra de cartão do `enterBank`).
+ * É o ÚNICO mecanismo que diz "o servidor tem zero cartões": o
+ * `subscribeToUserAccount` nunca reporta lista vazia (só chama `onCards`
+ * quando há cartões), então a checagem não pode ser feita por ele.
+ */
+export async function getServerCards(uid: string): Promise<VirtualCard[]> {
+  const snapshot = await getDocs(collection(db, 'users', uid, 'cards'));
+  const cards: VirtualCard[] = [];
+  snapshot.forEach((d) => {
+    cards.push(d.data() as VirtualCard);
+  });
+  return cards;
 }
 
 /**
